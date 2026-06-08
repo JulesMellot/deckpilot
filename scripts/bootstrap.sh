@@ -270,6 +270,39 @@ setup_python_env() {
   "$INSTALL_DIR/.venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt"
 }
 
+install_reboot_helper() {
+  command_exists systemctl || return
+  command_exists sudo || {
+    warn "Skipping automatic reboot helper because sudo is unavailable."
+    return
+  }
+
+  local helper_path="/usr/local/bin/deckpilot-system-reboot"
+  local sudoers_path="/etc/sudoers.d/90-deckpilot-system-reboot"
+  local systemctl_path
+  systemctl_path="$(command -v systemctl)"
+
+  [[ -n "$systemctl_path" ]] || {
+    warn "Skipping automatic reboot helper because systemctl is unavailable."
+    return
+  }
+
+  log "Installing privileged reboot helper for web-triggered Raspberry Pi updates."
+  $SUDO tee "$helper_path" >/dev/null <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+exec $systemctl_path reboot
+EOF
+  $SUDO chmod 755 "$helper_path"
+  $SUDO chown root:root "$helper_path"
+
+  $SUDO mkdir -p /etc/sudoers.d
+  $SUDO tee "$sudoers_path" >/dev/null <<EOF
+$RUN_USER ALL=(root) NOPASSWD: $helper_path
+EOF
+  $SUDO chmod 440 "$sudoers_path"
+}
+
 configure_console_boot() {
   command_exists systemctl || return
   is_linux_sbc || return
@@ -313,6 +346,7 @@ EOF
   $SUDO systemctl daemon-reload
   $SUDO systemctl enable "$service_name"
   $SUDO systemctl restart "$service_name"
+  install_reboot_helper
 }
 
 install_boot_info_service() {

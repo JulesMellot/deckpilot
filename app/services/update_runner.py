@@ -6,11 +6,14 @@ import os
 import platform
 import signal
 import subprocess
+import shutil
 import sys
 import time
 import urllib.request
 from pathlib import Path
 from typing import Any
+
+from app.services.update_policy import REBOOT_HELPER_PATH, build_update_plan, changed_files_between
 
 
 def parse_args() -> argparse.Namespace:
@@ -114,6 +117,28 @@ def start_app(repo_root: Path, python_executable: str, env: dict[str, str]) -> N
     subprocess.Popen(command, **kwargs)
 
 
+def automatic_reboot_available(service_name: str | None) -> bool:
+    return bool(
+        platform.system().lower() == 'linux'
+        and service_name
+        and shutil.which('sudo')
+        and Path(REBOOT_HELPER_PATH).exists()
+    )
+
+
+def reboot_system() -> None:
+    completed = subprocess.run(
+        ['sudo', '-n', REBOOT_HELPER_PATH],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or '').strip()
+        raise RuntimeError(detail or 'Automatic Raspberry Pi reboot failed.')
+
+
 def wait_for_http(port: int, timeout: int = 90) -> bool:
     deadline = time.time() + timeout
     url = f'http://127.0.0.1:{port}/api/state'
@@ -143,6 +168,7 @@ def main() -> None:
 
         write_status(status_path, phase='running', message='Pulling the latest DeckPilot version...')
         previous_commit = run_command(['git', 'rev-parse', '--short', 'HEAD'], repo_root, env, timeout=15)
+        previous_commit_full = run_command(['git', 'rev-parse', 'HEAD'], repo_root, env, timeout=15)
         branch = run_command(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], repo_root, env, timeout=15)
 
         remote_commit = None
@@ -165,6 +191,15 @@ def main() -> None:
         )
         run_command(pip_command(repo_root, args.python_executable), repo_root, env, timeout=900)
         current_commit = run_command(['git', 'rev-parse', '--short', 'HEAD'], repo_root, env, timeout=15)
+        current_commit_full = run_command(['git', 'rev-parse', 'HEAD'], repo_root, env, timeout=15)
+
+        update_plan = build_update_plan(
+            changed_files_between(repo_root, previous_commit_full, current_commit_full),
+            platform_name=platform.system().lower(),
+            install_mode='systemd' if args.service_name else 'manual',
+            automatic_reboot_available=automatic_reboot_available(args.service_name),
+            update_available=current_commit != previous_commit,
+        )
 
         if current_commit == previous_commit and 'Already up to date.' in pull_output:
             write_status(
@@ -173,15 +208,46 @@ def main() -> None:
                 message='DeckPilot is already up to date.',
                 finished_at=time.time(),
                 current_commit=current_commit,
+                current_commit_full=current_commit_full,
                 error=None,
             )
             return
 
+        if update_plan['reboot_required'] is True and update_plan['automatic_reboot_available']:
+            write_status(
+                status_path,
+                phase='rebooting',
+                message='Redemarrage du Raspberry Pi pour appliquer la mise a jour...',
+                current_commit=current_commit,
+                current_commit_full=current_commit_full,
+                reboot_required=True,
+                automatic_reboot_available=True,
+                restart_target=update_plan['restart_target'],
+                restart_notice=update_plan['restart_notice'],
+                restart_reason=update_plan['restart_reason'],
+                reboot_trigger_files=update_plan['reboot_trigger_files'],
+            )
+            terminate_process(args.parent_pid)
+            wait_for_process_exit(args.parent_pid)
+            time.sleep(1.0)
+            reboot_system()
+            return
+
+        restart_message = 'Restarting DeckPilot to apply the update...'
+        if update_plan['reboot_required'] is True and not update_plan['automatic_reboot_available']:
+            restart_message = 'DeckPilot va redemarrer maintenant. Un redemarrage manuel du Raspberry Pi restera requis apres la mise a jour.'
         write_status(
             status_path,
             phase='restarting',
-            message='Restarting DeckPilot to apply the update...',
+            message=restart_message,
             current_commit=current_commit,
+            current_commit_full=current_commit_full,
+            reboot_required=update_plan['reboot_required'],
+            automatic_reboot_available=update_plan['automatic_reboot_available'],
+            restart_target=update_plan['restart_target'],
+            restart_notice=update_plan['restart_notice'],
+            restart_reason=update_plan['restart_reason'],
+            reboot_trigger_files=update_plan['reboot_trigger_files'],
         )
 
         terminate_process(args.parent_pid)
@@ -196,9 +262,20 @@ def main() -> None:
         write_status(
             status_path,
             phase='success',
-            message='DeckPilot updated successfully.',
+            message=(
+                'DeckPilot updated successfully. Un redemarrage manuel du Raspberry Pi reste requis.'
+                if update_plan['reboot_required'] and not update_plan['automatic_reboot_available']
+                else 'DeckPilot updated successfully.'
+            ),
             finished_at=time.time(),
             current_commit=current_commit,
+            current_commit_full=current_commit_full,
+            reboot_required=update_plan['reboot_required'],
+            automatic_reboot_available=update_plan['automatic_reboot_available'],
+            restart_target=update_plan['restart_target'],
+            restart_notice=update_plan['restart_notice'],
+            restart_reason=update_plan['restart_reason'],
+            reboot_trigger_files=update_plan['reboot_trigger_files'],
             error=None,
         )
     except Exception as exc:

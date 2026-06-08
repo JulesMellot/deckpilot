@@ -46,6 +46,7 @@ The `scripts/install.sh` script is now a Raspberry Pi wrapper that runs the shar
 
 On supported Linux SBC installs, the bootstrap also installs an HDMI boot info service that keeps the local screen updated with the current IP address, Web UI URL, and HyperDeck endpoint after boot.
 The installer also switches the Pi to `multi-user.target` so the local HDMI output behaves like a dedicated appliance instead of booting to the Raspberry Pi desktop.
+The bootstrap also installs a small privileged helper so DeckPilot web updates can reboot the Raspberry Pi automatically when an update changes appliance-level components.
 
 ## HDMI Configuration
 

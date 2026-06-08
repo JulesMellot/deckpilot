@@ -13,6 +13,7 @@ from typing import Any
 
 from app.core.config import AppConfig
 from app.core.state import AppState
+from app.services.update_policy import REBOOT_HELPER_PATH, build_update_plan, changed_files_between
 
 
 class UpdateManager:
@@ -35,7 +36,7 @@ class UpdateManager:
             started_at = time.time()
             payload = {
                 'phase': 'running',
-                'message': 'Update started. DeckPilot will restart automatically if needed.',
+                'message': status.get('restart_notice') or 'Update started. DeckPilot will restart automatically if needed.',
                 'started_at': started_at,
                 'finished_at': None,
                 'error': None,
@@ -43,8 +44,16 @@ class UpdateManager:
                 'service_name': status.get('service_name'),
                 'branch': status.get('branch'),
                 'previous_commit': status.get('current_commit'),
+                'previous_commit_full': status.get('current_commit_full'),
                 'current_commit': status.get('current_commit'),
                 'remote_commit': status.get('remote_commit'),
+                'remote_commit_full': status.get('remote_commit_full'),
+                'reboot_required': status.get('reboot_required'),
+                'automatic_reboot_available': status.get('automatic_reboot_available'),
+                'restart_target': status.get('restart_target'),
+                'restart_notice': status.get('restart_notice'),
+                'restart_reason': status.get('restart_reason'),
+                'reboot_trigger_files': status.get('reboot_trigger_files', []),
             }
             await asyncio.to_thread(self._write_status_sync, payload)
             runner_pid = await asyncio.to_thread(self._spawn_runner_sync, status)
@@ -95,6 +104,7 @@ class UpdateManager:
         git_checkout = (self.repo_root / '.git').exists()
         bootstrap_sh = (self.repo_root / 'scripts' / 'bootstrap.sh').exists()
         bootstrap_ps1 = (self.repo_root / 'scripts' / 'bootstrap.ps1').exists()
+        automatic_reboot_available = self._automatic_reboot_available(platform_name, service_name)
 
         branch = None
         current_commit = None
@@ -113,6 +123,14 @@ class UpdateManager:
             if current_commit_full and remote_commit_full:
                 update_available = current_commit_full != remote_commit_full
 
+        update_plan = build_update_plan(
+            changed_files_between(self.repo_root, current_commit_full, remote_commit_full),
+            platform_name=platform_name,
+            install_mode='systemd' if service_name else 'manual',
+            automatic_reboot_available=automatic_reboot_available,
+            update_available=update_available,
+        )
+
         phase = str(saved.get('phase') or 'idle')
         runner_pid = saved.get('runner_pid')
         runner_active = self._pid_exists(int(runner_pid)) if runner_pid else False
@@ -122,7 +140,7 @@ class UpdateManager:
 
         # On systemd installs the detached updater can be killed with the old service cgroup
         # even though the new DeckPilot process is already running. Normalize that state here.
-        if phase == 'restarting' and not runner_active:
+        if phase in {'restarting', 'rebooting'} and not runner_active:
             update_applied = bool(
                 current_commit
                 and (
@@ -134,12 +152,17 @@ class UpdateManager:
             if update_applied:
                 phase = 'success'
                 saved['phase'] = 'success'
-                saved['message'] = 'DeckPilot updated successfully.'
+                if saved.get('reboot_required') and saved.get('automatic_reboot_available'):
+                    saved['message'] = 'DeckPilot updated successfully apres redemarrage du Raspberry Pi.'
+                elif saved.get('reboot_required'):
+                    saved['message'] = 'DeckPilot updated successfully. Un redemarrage du Raspberry Pi reste requis.'
+                else:
+                    saved['message'] = 'DeckPilot updated successfully.'
                 saved['finished_at'] = saved.get('finished_at') or time.time()
                 saved['error'] = None
                 saved['current_commit'] = current_commit
                 self._write_status_sync(saved)
-        elif phase in {'running', 'restarting'} and not runner_active and saved.get('finished_at'):
+        elif phase in {'running', 'restarting', 'rebooting'} and not runner_active and saved.get('finished_at'):
             phase = str(saved.get('phase'))
 
         reason = None
@@ -147,7 +170,7 @@ class UpdateManager:
             reason = 'Git is not available on this system.'
         elif not git_checkout:
             reason = 'Automatic update requires a Git-based DeckPilot installation.'
-        elif phase in {'running', 'restarting'} and runner_active:
+        elif phase in {'running', 'restarting', 'rebooting'} and runner_active:
             reason = 'An update is already in progress.'
 
         return {
@@ -162,6 +185,8 @@ class UpdateManager:
             'repo_root': str(self.repo_root),
             'install_mode': 'systemd' if service_name else 'manual',
             'service_name': service_name,
+            'current_commit_full': current_commit_full,
+            'remote_commit_full': remote_commit_full,
             'git_available': git_available,
             'git_checkout': git_checkout,
             'bootstrap_available': bootstrap_sh if platform_name != 'windows' else bootstrap_ps1,
@@ -169,6 +194,13 @@ class UpdateManager:
             'current_commit': current_commit,
             'remote_commit': remote_commit,
             'update_available': update_available,
+            'reboot_required': saved.get('reboot_required', update_plan['reboot_required']),
+            'automatic_reboot_available': saved.get('automatic_reboot_available', update_plan['automatic_reboot_available']),
+            'restart_target': saved.get('restart_target', update_plan['restart_target']),
+            'restart_notice': saved.get('restart_notice', update_plan['restart_notice']),
+            'restart_reason': saved.get('restart_reason', update_plan['restart_reason']),
+            'reboot_trigger_files': saved.get('reboot_trigger_files', update_plan['reboot_trigger_files']),
+            'changed_file_count': update_plan['changed_file_count'],
             'can_update': reason is None,
             'reason': reason,
         }
@@ -227,6 +259,14 @@ class UpdateManager:
             if completed.stdout.strip() == str(current_pid):
                 return candidate
         return None
+
+    def _automatic_reboot_available(self, platform_name: str, service_name: str | None) -> bool:
+        return bool(
+            platform_name == 'linux'
+            and service_name
+            and shutil.which('sudo')
+            and Path(REBOOT_HELPER_PATH).exists()
+        )
 
     def _read_status_sync(self) -> dict[str, Any]:
         if not self.status_path.exists():

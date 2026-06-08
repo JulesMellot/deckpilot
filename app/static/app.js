@@ -361,6 +361,19 @@ function renderUpdateStatus(update) {
     `Branch: ${update.branch || 'unknown'} | Local: ${update.current_commit || 'n/a'} | Remote: ${update.remote_commit || 'n/a'}`,
     `Status: ${(update.phase || 'idle').toUpperCase()} | ${update.message || 'Ready'}`,
   ];
+  if (update.restart_target === 'raspberry_pi') {
+    lines.push('Update action: RASPBERRY PI REBOOT');
+  } else if (update.restart_target === 'deckpilot') {
+    lines.push('Update action: DECKPILOT RESTART ONLY');
+  } else {
+    lines.push('Update action: AUTOMATIC DECISION DURING UPDATE');
+  }
+  if (update.restart_notice) {
+    lines.push(`Restart policy: ${update.restart_notice}`);
+  }
+  if (update.restart_reason) {
+    lines.push(`Reason: ${update.restart_reason}`);
+  }
   if (update.finished_at) {
     lines.push(`Last run: ${formatDateTime(update.finished_at)}`);
   }
@@ -372,7 +385,7 @@ function renderUpdateStatus(update) {
   }
   DOM.updateMeta.textContent = lines.join('\n');
 
-  const busy = ['running', 'restarting'].includes(update.phase);
+  const busy = ['running', 'restarting', 'rebooting'].includes(update.phase);
   DOM.btnRunUpdate.disabled = busy || !update.can_update;
   DOM.btnRunUpdate.textContent = busy ? 'UPDATING...' : 'UPDATE NOW';
   DOM.btnRunUpdate.classList.toggle('active', Boolean(update.update_available) && !busy && update.can_update);
@@ -443,12 +456,12 @@ function startUpdatePolling() {
     try {
       const update = await api('/api/system/update');
       renderUpdateStatus(update);
-      if (!['running', 'restarting'].includes(update.phase)) {
+      if (!['running', 'restarting', 'rebooting'].includes(update.phase)) {
         stopUpdatePolling();
         await refresh();
       }
     } catch (error) {
-      DOM.updateMeta.textContent = 'Updating DeckPilot...\nWaiting for the server to restart...';
+      DOM.updateMeta.textContent = 'Updating DeckPilot...\nWaiting for the service restart or Raspberry Pi reboot...';
     }
   };
   state.updatePollTimer = setInterval(poll, 2000);
@@ -915,9 +928,22 @@ DOM.btnArmLive.addEventListener('click', async () => {
   applySafetyState(response.safety);
 });
 DOM.btnRunUpdate.addEventListener('click', async () => {
+  const updateStatus = state.updateStatus;
+  let updateMessage = 'DeckPilot will pull the latest version and restart automatically if needed. Continue?';
+  if (updateStatus?.restart_target === 'raspberry_pi') {
+    if (updateStatus.automatic_reboot_available) {
+      updateMessage = 'Cette mise a jour redemarrera automatiquement le Raspberry Pi car elle modifie des composants appliance. Continuer ?';
+    } else {
+      updateMessage = 'Cette mise a jour necessitera un redemarrage du Raspberry Pi. DeckPilot se mettra a jour maintenant et indiquera ensuite qu un reboot manuel reste requis. Continuer ?';
+    }
+  } else if (updateStatus?.restart_target === 'deckpilot') {
+    updateMessage = 'Cette mise a jour redemarrera seulement DeckPilot. Un reboot du Raspberry Pi nest pas obligatoire. Continuer ?';
+  } else if (updateStatus?.restart_notice) {
+    updateMessage = `${updateStatus.restart_notice} Continuer ?`;
+  }
   const confirmed = await requestConfirm({
     title: 'Update DeckPilot',
-    message: 'DeckPilot will pull the latest version and restart automatically if needed. Continue?',
+    message: updateMessage,
     confirmLabel: 'UPDATE'
   });
   if (!confirmed) return;

@@ -906,7 +906,6 @@ DOM.btnArmLive.addEventListener('click', async () => {
   });
 });
 DOM.btnRunUpdate.addEventListener('click', async () => {
-  if (!await ensureLiveActionAllowed('System update')) return;
   const confirmed = await requestConfirm({
     title: 'Update DeckPilot',
     message: 'DeckPilot will pull the latest version and restart automatically if needed. Continue?',

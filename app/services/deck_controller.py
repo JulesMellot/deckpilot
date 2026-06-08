@@ -151,8 +151,10 @@ class DeckController:
         await self.state.set_transport(status='play', paused=False, speed=100)
 
     async def stop_playback(self) -> None:
-        if not await self.player.stop() and await self.player.is_available():
-            await self._report_error('player', f'Stop failed: {self.player.last_error or "unknown player error"}')
+        if await self.player.is_available():
+            if not await self.player.stop():
+                await self._report_error('player', f'Stop failed: {self.player.last_error or "unknown player error"}')
+            await self.player.stop_process()
         self._play_started_at = None
         self._pause_started_at = None
         self._accumulated_pause_seconds = 0.0
@@ -410,6 +412,7 @@ class DeckController:
         started = await self.player.play_file(clip.filepath, loop=use_loop, is_vertical=clip.is_vertical)
         if not started:
             await self._report_error('player', f'Playback recovery failed for "{clip.name}": {self.player.last_error or "unknown player error"}')
+            await self.player.stop_process()
             await self._publish_health()
             return False
         return True

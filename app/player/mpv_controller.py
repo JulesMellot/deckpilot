@@ -37,11 +37,15 @@ class MPVController:
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
             )
-            for _ in range(24):
+            for _ in range(48):
                 if socket_path.exists():
-                    self._reader, self._writer = await asyncio.open_unix_connection(self.config.mpv_socket_path)
-                    self.last_error = None
-                    return
+                    try:
+                        self._reader, self._writer = await asyncio.open_unix_connection(self.config.mpv_socket_path)
+                        self.last_error = None
+                        return
+                    except (ConnectionError, FileNotFoundError, OSError):
+                        await asyncio.sleep(0.25)
+                        continue
                 if self.process.returncode is not None:
                     break
                 await asyncio.sleep(0.25)
@@ -167,10 +171,13 @@ class MPVController:
             self.config.mpv_binary,
             '--idle=yes',
             '--fullscreen=yes',
-            '--force-window=yes',
-            '--keep-open=always',
+            '--force-window=no',
+            '--keep-open=no',
             '--audio-display=no',
             '--terminal=no',
+            '--no-config',
+            '--osc=no',
+            '--load-scripts=no',
             '--osd-level=0',
             '--hwdec=auto-safe',
             f'--log-file={log_path}',
@@ -196,7 +203,7 @@ class MPVController:
         return profiles
 
     def _build_start_error(self, profile_name: str, log_path: Path) -> str:
-        tail = self._tail_file(log_path, line_count=8)
+        tail = self._tail_file(log_path, line_count=20)
         if tail:
             return f'mpv startup failed ({profile_name}): {tail}'
         return f'mpv IPC socket was not created at {self.config.mpv_socket_path} ({profile_name})'

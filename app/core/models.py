@@ -20,6 +20,7 @@ class ClipRecord:
     height: int = 0
     is_vertical: bool = False
     thumbnail_path: str | None = None
+    processing_state: str = "ready"
     loop_enabled: bool = False
     is_builtin: bool = False
 

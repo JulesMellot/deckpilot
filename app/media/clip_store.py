@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import hashlib
 import shutil
 import sqlite3
 import subprocess
+import time
 from pathlib import Path
-from typing import Iterable, List
+from threading import Lock
+from typing import Any, Awaitable, Callable, Iterable, List
 
 from app.core.config import AppConfig
 from app.core.models import ClipRecord
@@ -17,11 +21,51 @@ class ClipStore:
         self.db_path = Path(config.db_path)
         self.clips_dir = Path(config.clips_dir)
         self.thumbnails_dir = Path(config.thumbnails_dir)
+        self._enrichment_queue: asyncio.Queue[str] = asyncio.Queue()
+        self._queued_enrichment: set[str] = set()
+        self._enrichment_workers: list[asyncio.Task] = []
+        self._enrichment_worker_count = max(1, int(config.media_enrichment_workers or 1))
+        self._enrichment_notify_task: asyncio.Task | None = None
+        self._enrichment_notify_event = asyncio.Event()
+        self._enrichment_callback: Callable[[], Awaitable[None]] | None = None
+        self._processing_metrics_lock = Lock()
+        self._processing_batch_started_at: float | None = None
+        self._processing_batch_total = 0
+        self._processing_batch_completed = 0
 
     async def initialize(self) -> None:
         await asyncio.to_thread(self._initialize_sync)
         await self.ensure_builtin_clips()
-        await self.sync_with_disk()
+
+    async def start_background_tasks(self, on_enriched: Callable[[], Awaitable[None]] | None = None) -> None:
+        self._enrichment_callback = on_enriched
+        if not self._enrichment_workers or any(worker.done() for worker in self._enrichment_workers):
+            self._enrichment_workers = [
+                asyncio.create_task(self._enrichment_worker(index))
+                for index in range(self._enrichment_worker_count)
+            ]
+        if on_enriched and (self._enrichment_notify_task is None or self._enrichment_notify_task.done()):
+            self._enrichment_notify_task = asyncio.create_task(self._enrichment_notifier())
+
+    async def stop_background_tasks(self) -> None:
+        tasks = [*self._enrichment_workers]
+        if self._enrichment_notify_task:
+            tasks.append(self._enrichment_notify_task)
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        self._enrichment_workers = []
+        self._enrichment_notify_task = None
+        self._enrichment_callback = None
+        self._enrichment_notify_event.clear()
+        self._queued_enrichment.clear()
+        self._enrichment_queue = asyncio.Queue()
+        with self._processing_metrics_lock:
+            self._processing_batch_started_at = None
+            self._processing_batch_total = 0
+            self._processing_batch_completed = 0
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
@@ -47,6 +91,7 @@ class ClipStore:
                     height INTEGER NOT NULL DEFAULT 0,
                     is_vertical INTEGER NOT NULL DEFAULT 0,
                     thumbnail_path TEXT,
+                    processing_state TEXT NOT NULL DEFAULT 'ready',
                     loop_enabled INTEGER NOT NULL DEFAULT 0,
                     is_builtin INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -71,18 +116,22 @@ class ClipStore:
                 conn.execute("ALTER TABLE clips ADD COLUMN height INTEGER NOT NULL DEFAULT 0")
             if 'is_vertical' not in columns:
                 conn.execute("ALTER TABLE clips ADD COLUMN is_vertical INTEGER NOT NULL DEFAULT 0")
+            if 'processing_state' not in columns:
+                conn.execute("ALTER TABLE clips ADD COLUMN processing_state TEXT NOT NULL DEFAULT 'ready'")
             conn.execute("INSERT OR IGNORE INTO media_folders (name) VALUES ('Library')")
             conn.execute("INSERT OR IGNORE INTO media_folders (name) VALUES ('System')")
             conn.commit()
 
     async def sync_with_disk(self) -> None:
-        await asyncio.to_thread(self._sync_with_disk_sync)
+        pending_paths = await asyncio.to_thread(self._sync_with_disk_sync)
+        await self._enqueue_enrichment_paths(pending_paths)
 
-    def _sync_with_disk_sync(self) -> None:
+    def _sync_with_disk_sync(self) -> list[str]:
         files = [
             p for p in self.clips_dir.iterdir()
             if p.is_file() and p.suffix.lower() in self.config.allowed_upload_extensions
         ]
+        pending_paths: list[str] = []
         with self._connect() as conn:
             existing = {row['filename']: row for row in conn.execute('SELECT * FROM clips').fetchall()}
             sort_seed = conn.execute('SELECT COALESCE(MAX(sort_order), 0) FROM clips').fetchone()[0]
@@ -90,35 +139,22 @@ class ClipStore:
             for file_path in files:
                 if file_path.name in existing:
                     row = existing[file_path.name]
-                    if not row['width'] or not row['height']:
-                        meta = self._probe_clip(file_path)
+                    needs_meta_refresh = self._metadata_needs_refresh(row)
+                    needs_thumb_refresh = self._thumbnail_needs_refresh(file_path, row['thumbnail_path'])
+                    if needs_meta_refresh or needs_thumb_refresh:
                         conn.execute(
-                            '''
-                            UPDATE clips
-                            SET width = ?, height = ?, is_vertical = ?, codec = ?, framerate = ?, duration_seconds = ?, duration_timecode = ?
-                            WHERE filename = ?
-                            ''',
-                            (
-                                meta['width'],
-                                meta['height'],
-                                1 if meta['is_vertical'] else 0,
-                                meta['codec'],
-                                meta['framerate'],
-                                meta['duration_seconds'],
-                                meta['duration_timecode'],
-                                file_path.name,
-                            ),
+                            'UPDATE clips SET processing_state = ? WHERE filename = ?',
+                            ('pending', file_path.name),
                         )
+                        pending_paths.append(str(file_path))
                     continue
                 sort_seed += 1
-                meta = self._probe_clip(file_path)
-                thumb = self._generate_thumbnail(file_path)
                 conn.execute(
                     """
                     INSERT INTO clips (
                         sort_order, name, folder, filename, filepath, duration_seconds, duration_timecode,
-                        framerate, codec, width, height, is_vertical, thumbnail_path, loop_enabled, is_builtin
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
+                        framerate, codec, width, height, is_vertical, thumbnail_path, processing_state, loop_enabled, is_builtin
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
                     """,
                     (
                         sort_seed,
@@ -126,16 +162,18 @@ class ClipStore:
                         'Library',
                         file_path.name,
                         str(file_path),
-                        meta['duration_seconds'],
-                        meta['duration_timecode'],
-                        meta['framerate'],
-                        meta['codec'],
-                        meta['width'],
-                        meta['height'],
-                        1 if meta['is_vertical'] else 0,
-                        thumb,
+                        0.0,
+                        '00:00:00:00',
+                        self.config.default_framerate,
+                        'unknown',
+                        0,
+                        0,
+                        0,
+                        None,
+                        'pending',
                     ),
                 )
+                pending_paths.append(str(file_path))
 
             disk_names = {item.name for item in files}
             for row in conn.execute('SELECT filename, thumbnail_path FROM clips WHERE is_builtin = 0').fetchall():
@@ -144,6 +182,7 @@ class ClipStore:
                         Path(row['thumbnail_path']).unlink(missing_ok=True)
                     conn.execute('DELETE FROM clips WHERE filename = ?', (row['filename'],))
             conn.commit()
+        return pending_paths
 
     async def ensure_builtin_clips(self) -> None:
         await asyncio.to_thread(self._ensure_builtin_clips_sync)
@@ -185,8 +224,8 @@ class ClipStore:
                     """
                     INSERT INTO clips (
                         sort_order, name, folder, filename, filepath, duration_seconds, duration_timecode,
-                        framerate, codec, width, height, is_vertical, thumbnail_path, loop_enabled, is_builtin
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1)
+                        framerate, codec, width, height, is_vertical, thumbnail_path, processing_state, loop_enabled, is_builtin
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1)
                     """,
                     (
                         sort_seed,
@@ -202,6 +241,7 @@ class ClipStore:
                         meta['height'],
                         1 if meta['is_vertical'] else 0,
                         thumb,
+                        'ready',
                     ),
                 )
             conn.commit()
@@ -258,29 +298,219 @@ class ClipStore:
             'is_vertical': bool(height and width and height > width),
         }
 
+    def _metadata_needs_refresh(self, row: sqlite3.Row) -> bool:
+        return (
+            not row['width']
+            or not row['height']
+            or not row['duration_seconds']
+            or row['duration_timecode'] == '00:00:00:00'
+            or row['codec'] == 'unknown'
+            or not row['framerate']
+        )
+
     def _generate_thumbnail(self, file_path: Path) -> str | None:
         if not shutil.which(self.config.ffmpeg_binary):
             return None
-        output = self.thumbnails_dir / f'{file_path.stem}.jpg'
+        output = self._thumbnail_output_path(file_path)
         cmd = [
             self.config.ffmpeg_binary,
             '-y',
+            '-hide_banner',
+            '-loglevel',
+            'error',
             '-i',
             str(file_path),
             '-vf',
-            'thumbnail,scale=320:-1',
+            'thumbnail,scale=256:-2:flags=lanczos',
             '-frames:v',
             '1',
+            '-q:v',
+            '6',
+            '-map_metadata',
+            '-1',
             str(output),
         ]
         subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return str(output) if output.exists() else None
 
+    def _thumbnail_output_path(self, file_path: Path) -> Path:
+        stats = file_path.stat()
+        fingerprint = hashlib.sha1(
+            f'{file_path.name}:{stats.st_mtime_ns}:{stats.st_size}'.encode('utf-8')
+        ).hexdigest()[:16]
+        return self.thumbnails_dir / f'{file_path.stem}-{fingerprint}.jpg'
+
+    def _thumbnail_needs_refresh(self, file_path: Path, thumbnail_path: str | None) -> bool:
+        if not thumbnail_path:
+            return True
+        output = Path(thumbnail_path)
+        expected_output = self._thumbnail_output_path(file_path)
+        if output != expected_output:
+            return True
+        if not output.exists():
+            return True
+        try:
+            return output.stat().st_mtime_ns < file_path.stat().st_mtime_ns
+        except FileNotFoundError:
+            return True
+
+    async def _enqueue_enrichment_paths(self, paths: Iterable[str]) -> None:
+        queued_count = 0
+        for path in paths:
+            if path in self._queued_enrichment:
+                continue
+            self._queued_enrichment.add(path)
+            await self._enrichment_queue.put(path)
+            queued_count += 1
+        if queued_count:
+            self._record_batch_enqueue(queued_count)
+
+    async def _enrichment_worker(self, _worker_index: int) -> None:
+        while True:
+            path = await self._enrichment_queue.get()
+            try:
+                filename = Path(path).name
+                await asyncio.to_thread(self._set_processing_state_sync, filename, 'processing')
+                changed = await asyncio.to_thread(self._enrich_clip_sync, Path(path))
+                if changed:
+                    self._enrichment_notify_event.set()
+                else:
+                    await asyncio.to_thread(self._set_processing_state_sync, filename, 'error')
+                    self._enrichment_notify_event.set()
+                self._record_batch_completion()
+            except Exception:
+                await asyncio.to_thread(self._set_processing_state_sync, Path(path).name, 'error')
+                self._enrichment_notify_event.set()
+                self._record_batch_completion()
+            finally:
+                self._queued_enrichment.discard(path)
+                self._enrichment_queue.task_done()
+
+    async def _enrichment_notifier(self) -> None:
+        while True:
+            await self._enrichment_notify_event.wait()
+            self._enrichment_notify_event.clear()
+            await asyncio.sleep(0.25)
+            if self._enrichment_notify_event.is_set():
+                continue
+            if self._enrichment_callback:
+                await self._enrichment_callback()
+
+    def _enrich_clip_sync(self, file_path: Path) -> bool:
+        if not file_path.exists():
+            return False
+        meta = self._probe_clip(file_path)
+        thumb = self._generate_thumbnail(file_path)
+        with self._connect() as conn:
+            row = conn.execute('SELECT * FROM clips WHERE filename = ?', (file_path.name,)).fetchone()
+            if not row:
+                return False
+            old_thumb = row['thumbnail_path']
+            conn.execute(
+                '''
+                UPDATE clips
+                SET width = ?, height = ?, is_vertical = ?, codec = ?, framerate = ?, duration_seconds = ?, duration_timecode = ?, thumbnail_path = ?, processing_state = ?
+                WHERE filename = ?
+                ''',
+                (
+                    meta['width'],
+                    meta['height'],
+                    1 if meta['is_vertical'] else 0,
+                    meta['codec'],
+                    meta['framerate'],
+                    meta['duration_seconds'],
+                    meta['duration_timecode'],
+                    thumb,
+                    'ready',
+                    file_path.name,
+                ),
+            )
+            conn.commit()
+        if old_thumb and old_thumb != thumb:
+            Path(old_thumb).unlink(missing_ok=True)
+        return True
+
+    def _set_processing_state_sync(self, filename: str, state: str) -> None:
+        with self._connect() as conn:
+            conn.execute('UPDATE clips SET processing_state = ? WHERE filename = ?', (state, filename))
+            conn.commit()
+
+    def _record_batch_enqueue(self, count: int) -> None:
+        with self._processing_metrics_lock:
+            if (
+                self._processing_batch_started_at is None
+                or self._processing_batch_completed >= self._processing_batch_total
+            ):
+                self._processing_batch_started_at = time.monotonic()
+                self._processing_batch_total = 0
+                self._processing_batch_completed = 0
+            self._processing_batch_total += count
+
+    def _record_batch_completion(self) -> None:
+        with self._processing_metrics_lock:
+            if self._processing_batch_started_at is None:
+                self._processing_batch_started_at = time.monotonic()
+            self._processing_batch_completed += 1
+            if self._processing_batch_completed > self._processing_batch_total:
+                self._processing_batch_total = self._processing_batch_completed
+
+    async def processing_status(self) -> dict[str, int]:
+        return await asyncio.to_thread(self._processing_status_sync)
+
+    def _processing_status_sync(self) -> dict[str, int | float | None]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                '''
+                SELECT processing_state, COUNT(*) AS count
+                FROM clips
+                GROUP BY processing_state
+                '''
+            ).fetchall()
+        counts = {row['processing_state']: row['count'] for row in rows}
+        pending = int(counts.get('pending', 0))
+        processing = int(counts.get('processing', 0))
+        error = int(counts.get('error', 0))
+        ready = int(counts.get('ready', 0))
+        remaining = pending + processing
+        clips_per_second: float | None = None
+        eta_seconds: float | None = None
+        with self._processing_metrics_lock:
+            started_at = self._processing_batch_started_at
+            batch_total = self._processing_batch_total
+            batch_completed = self._processing_batch_completed
+        if remaining > 0 and started_at is not None and batch_completed > 0:
+            elapsed = max(time.monotonic() - started_at, 0.001)
+            effective_completed = max(batch_completed, batch_total - remaining)
+            if effective_completed > 0:
+                clips_per_second = round(effective_completed / elapsed, 2)
+                if clips_per_second > 0:
+                    eta_seconds = round(remaining / clips_per_second, 1)
+        return {
+            'pending': pending,
+            'processing': processing,
+            'error': error,
+            'ready': ready,
+            'queued': self._enrichment_queue.qsize(),
+            'clips_per_second': clips_per_second,
+            'eta_seconds': eta_seconds,
+        }
+
+    async def save_upload_streams(self, uploads: Iterable[Any]) -> None:
+        for upload in uploads:
+            filename = Path(getattr(upload, 'filename', '') or 'clip.bin').name
+            destination = self.clips_dir / filename
+            await asyncio.to_thread(self._save_upload_stream_sync, upload, destination)
+
+    def _save_upload_stream_sync(self, upload: Any, destination: Path) -> None:
+        fileobj = upload.file
+        fileobj.seek(0)
+        with destination.open('wb') as handle:
+            shutil.copyfileobj(fileobj, handle, length=1024 * 1024)
+
     async def save_uploads(self, uploads: Iterable[tuple[str, bytes]]) -> None:
         for filename, content in uploads:
             destination = self.clips_dir / Path(filename).name
             destination.write_bytes(content)
-        await self.sync_with_disk()
 
     async def list_clips(self) -> List[ClipRecord]:
         return await asyncio.to_thread(self._list_clips_sync)
@@ -305,6 +535,7 @@ class ClipStore:
                     height=row['height'],
                     is_vertical=bool(row['is_vertical']),
                     thumbnail_path=row['thumbnail_path'],
+                    processing_state=row['processing_state'] or 'ready',
                     loop_enabled=bool(row['loop_enabled']),
                     is_builtin=bool(row['is_builtin']),
                 )

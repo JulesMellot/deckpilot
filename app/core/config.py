@@ -30,6 +30,7 @@ class AppConfig:
     ws_tick_seconds: float = 1.0
     log_buffer_size: int = 200
     allowed_upload_extensions: list[str] = field(default_factory=lambda: [".mp4", ".mov", ".mkv"])
+    media_enrichment_workers: int = field(default_factory=lambda: max(1, min(4, os.cpu_count() or 2)))
 
     def ensure_directories(self) -> None:
         Path(self.clips_dir).mkdir(parents=True, exist_ok=True)
@@ -65,6 +66,7 @@ def load_config() -> AppConfig:
         "db_path": os.environ.get("PIDECK_DB_PATH"),
         "mpv_log_path": os.environ.get("PIDECK_MPV_LOG_PATH"),
         "default_video_format": os.environ.get("PIDECK_VIDEO_FORMAT"),
+        "media_enrichment_workers": int(os.environ["PIDECK_MEDIA_ENRICHMENT_WORKERS"]) if os.environ.get("PIDECK_MEDIA_ENRICHMENT_WORKERS") else None,
     }
     raw = _merge_dict(raw, env_overrides)
 

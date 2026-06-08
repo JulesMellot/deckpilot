@@ -48,6 +48,7 @@ class DeckController:
         self._last_error: str | None = None
         self._last_error_key: str | None = None
         self._recovering_player = False
+        self._media_publish_task: asyncio.Task | None = None
 
     async def start(self) -> None:
         self._ticker_task = asyncio.create_task(self._ticker())
@@ -62,6 +63,10 @@ class DeckController:
             self._health_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._health_task
+        if self._media_publish_task:
+            self._media_publish_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._media_publish_task
 
     async def list_clips(self):
         return await self.clip_store.list_clips()
@@ -69,6 +74,22 @@ class DeckController:
     async def refresh_clips(self) -> None:
         await self.clip_store.sync_with_disk()
         await self.playlist_store.sync_active_playlist_from_clips()
+        await self._publish_media_state()
+
+    async def schedule_media_refresh_publish(self) -> None:
+        if self._media_publish_task and not self._media_publish_task.done():
+            return
+        self._media_publish_task = asyncio.create_task(self._debounced_media_publish())
+
+    async def _debounced_media_publish(self) -> None:
+        try:
+            await asyncio.sleep(0.25)
+            await self.playlist_store.sync_active_playlist_from_clips()
+            await self._publish_media_state()
+        finally:
+            self._media_publish_task = None
+
+    async def _publish_media_state(self) -> None:
         clips = await self.clip_store.list_clips()
         folders = await self.clip_store.list_folders()
         playlists = await self.playlist_store.list_playlists()
@@ -406,6 +427,7 @@ class DeckController:
 
     async def health_snapshot(self) -> Dict[str, Any]:
         clips = await self.clip_store.list_clips()
+        media_processing = await self._media_processing_snapshot()
         outputs = await self.output_manager.list_outputs()
         selected_output = next((item for item in outputs if item.selected), None)
         effective_width, effective_height = self._canvas_dimensions(selected_output)
@@ -434,6 +456,7 @@ class DeckController:
             'safe_mode_enabled': self.state.safe_mode_enabled,
             'live_controls_armed': self.state.live_controls_armed(),
             'clips_last_synced_at': self._last_clip_sync_at,
+            'media_processing': media_processing,
             'storage_free_bytes': free_bytes,
             'storage_total_bytes': total_bytes,
         }
@@ -443,6 +466,7 @@ class DeckController:
         return {
             'transport': self.state.transport.to_dict(),
             'clips': [clip.to_dict() for clip in clips],
+            'media_processing': await self._media_processing_snapshot(),
             'folders': await self.clip_store.list_folders(),
             'playlists': await self.playlist_store.list_playlists(),
             'preview_enabled': self.state.preview_enabled,
@@ -510,6 +534,12 @@ class DeckController:
 
     async def _publish_health(self) -> None:
         await self.state.publish('health', await self.health_snapshot())
+
+    async def _media_processing_snapshot(self) -> Dict[str, int]:
+        processing_method = getattr(self.clip_store, 'processing_status', None)
+        if not callable(processing_method):
+            return {'pending': 0, 'processing': 0, 'error': 0, 'ready': 0, 'queued': 0}
+        return await processing_method()
 
     async def _apply_output_geometry(self, selected_output) -> None:
         width, height = self._canvas_dimensions(selected_output)

@@ -657,10 +657,15 @@ header { grid-area: header; }
 
 .folder-card-thumb {
   background-color: #111;
-  background-position: center;
-  background-repeat: no-repeat;
-  background-size: cover;
   min-height: 48px;
+  overflow: hidden;
+}
+
+.folder-card-thumb-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
 
 .folder-card-thumb.empty,
@@ -727,10 +732,20 @@ header { grid-area: header; }
   color: #fff;
   text-shadow: 0 1px 4px #000;
 }
+.status-overlay.processing {
+  background: rgba(255, 184, 0, 0.22);
+  border-color: #ffb800;
+}
+.status-overlay.error {
+  background: rgba(255, 80, 80, 0.22);
+  border-color: #ff5050;
+}
 
 .media-info { padding: 0.5rem; }
 .media-title { font-size: 0.85rem; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 2px; }
 .media-meta { font-family: var(--font-mono); font-size: 0.7rem; color: var(--text-dim); }
+.media-item.processing .media-title { color: #ffd166; }
+.media-item.processing-error .media-title { color: #ff8d8d; }
 
 .media-controls {
   display: flex;

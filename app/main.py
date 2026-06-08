@@ -34,6 +34,7 @@ def create_application() -> tuple[AppConfig, object]:
     @app.on_event('startup')
     async def _startup() -> None:
         await clip_store.initialize()
+        await clip_store.start_background_tasks(controller.schedule_media_refresh_publish)
         await playlist_store.initialize()
         await output_manager.initialize()
         selected_output = await output_manager.get_selected_output()
@@ -51,6 +52,7 @@ def create_application() -> tuple[AppConfig, object]:
     @app.on_event('shutdown')
     async def _shutdown() -> None:
         await server.stop()
+        await clip_store.stop_background_tasks()
         await controller.stop()
         await player.stop_process()
 

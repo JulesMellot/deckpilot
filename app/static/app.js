@@ -1,6 +1,9 @@
 const state = {
   snapshot: null,
   clipIndex: new Map(),
+  mediaNodeCache: new Map(),
+  playlistNodeCache: new Map(),
+  folderNodeCache: new Map(),
   dragClipId: null,
   selectedClipId: null,
   selectedPlaylistPosition: 1,
@@ -16,7 +19,23 @@ const state = {
   volumeCommitTimer: null,
   volumeCommitInFlight: false,
   pendingVolume: null,
+  uploadHideTimer: null,
+  uploadProcessingActive: false,
+  mediaRenderLimit: 0,
+  mediaVirtualEnabled: false,
+  mediaVirtualKey: null,
+  mediaVirtualCheckScheduled: false,
+  playlistRenderLimit: 0,
+  playlistVirtualEnabled: false,
+  playlistVirtualKey: null,
+  playlistVirtualCheckScheduled: false,
+  websocketConnected: false,
 };
+
+const MEDIA_VIRTUALIZATION_THRESHOLD = 120;
+const MEDIA_VIRTUALIZATION_BATCH = 60;
+const PLAYLIST_VIRTUALIZATION_THRESHOLD = 150;
+const PLAYLIST_VIRTUALIZATION_BATCH = 80;
 
 const DOM = {
   appName: document.getElementById('app-name'),
@@ -43,6 +62,7 @@ const DOM = {
   dropzone: document.getElementById('dropzone'),
   fileInput: document.getElementById('file-input'),
   uploadWrapper: document.getElementById('upload-wrapper'),
+  uploadStatus: document.getElementById('upload-status'),
   uploadProgress: document.getElementById('upload-progress'),
   btnRefreshMedia: document.getElementById('btn-refresh-media'),
   folderFilter: document.getElementById('folder-filter'),
@@ -116,6 +136,11 @@ function formatRemainingClock(seconds) {
   return `-${formatClock(seconds)}`;
 }
 
+function formatEta(seconds) {
+  if (seconds === null || seconds === undefined) return 'ETA --';
+  return `ETA ${formatClock(seconds)}`;
+}
+
 function formatDateTime(timestampSeconds) {
   if (!timestampSeconds) return 'n/a';
   return new Date(timestampSeconds * 1000).toLocaleString('en-GB', { hour12: false });
@@ -179,6 +204,123 @@ function buildFolderClipMap(clips) {
   return folderMap;
 }
 
+function pruneNodeCache(cache, validKeys) {
+  for (const key of [...cache.keys()]) {
+    if (!validKeys.has(key)) {
+      cache.delete(key);
+    }
+  }
+}
+
+function mediaVirtualDatasetKey(clips) {
+  return `${currentFolder()}::${state.mediaView}::${clips.length}`;
+}
+
+function playlistVirtualDatasetKey(items, playlistId) {
+  return `${playlistId || 'none'}::${items.length}`;
+}
+
+function ensureMediaRenderLimit(clips) {
+  const total = clips.length;
+  const datasetKey = mediaVirtualDatasetKey(clips);
+  const shouldVirtualize = currentFolder() !== 'All' && total > MEDIA_VIRTUALIZATION_THRESHOLD;
+  if (state.mediaVirtualKey !== datasetKey) {
+    state.mediaVirtualKey = datasetKey;
+    state.mediaRenderLimit = shouldVirtualize ? MEDIA_VIRTUALIZATION_BATCH : total;
+  }
+  state.mediaVirtualEnabled = shouldVirtualize;
+  if (!shouldVirtualize) {
+    state.mediaRenderLimit = total;
+    return clips;
+  }
+
+  const activeClipId = state.snapshot?.transport?.clip_id;
+  const priorityIndex = clips.findIndex((clip) => clip.deck_id === (activeClipId || state.selectedClipId));
+  if (priorityIndex >= 0) {
+    state.mediaRenderLimit = Math.max(state.mediaRenderLimit, priorityIndex + 1);
+  }
+  state.mediaRenderLimit = Math.min(total, Math.max(state.mediaRenderLimit, MEDIA_VIRTUALIZATION_BATCH));
+  return clips.slice(0, state.mediaRenderLimit);
+}
+
+function maybeLoadMoreMedia(force = false) {
+  const clips = filteredClips();
+  if (!state.mediaVirtualEnabled) return false;
+  if (state.mediaRenderLimit >= clips.length) return false;
+  const nearBottom = DOM.dropzone.scrollTop + DOM.dropzone.clientHeight >= DOM.dropzone.scrollHeight - 600;
+  if (!force && !nearBottom) return false;
+  const nextLimit = Math.min(clips.length, state.mediaRenderLimit + MEDIA_VIRTUALIZATION_BATCH);
+  if (nextLimit === state.mediaRenderLimit) return false;
+  state.mediaRenderLimit = nextLimit;
+  renderMediaGrid(clips, state.snapshot?.transport?.clip_id, state.snapshot?.transport?.status);
+  return true;
+}
+
+function scheduleMediaVirtualizationCheck() {
+  if (!state.mediaVirtualEnabled || state.mediaVirtualCheckScheduled) return;
+  state.mediaVirtualCheckScheduled = true;
+  requestAnimationFrame(() => {
+    state.mediaVirtualCheckScheduled = false;
+    if (!state.mediaVirtualEnabled) return;
+    const needsFill = DOM.dropzone.scrollHeight <= DOM.dropzone.clientHeight + 120;
+    if (needsFill) {
+      maybeLoadMoreMedia(true);
+    }
+  });
+}
+
+function ensurePlaylistRenderLimit(items, playlistId) {
+  const total = items.length;
+  const datasetKey = playlistVirtualDatasetKey(items, playlistId);
+  const shouldVirtualize = total > PLAYLIST_VIRTUALIZATION_THRESHOLD;
+  if (state.playlistVirtualKey !== datasetKey) {
+    state.playlistVirtualKey = datasetKey;
+    state.playlistRenderLimit = shouldVirtualize ? PLAYLIST_VIRTUALIZATION_BATCH : total;
+    DOM.playlistItems.scrollTop = 0;
+  }
+  state.playlistVirtualEnabled = shouldVirtualize;
+  if (!shouldVirtualize) {
+    state.playlistRenderLimit = total;
+    return items;
+  }
+
+  const activeClipId = state.snapshot?.transport?.clip_id;
+  const selectedIndex = items.findIndex((item) => item.position === state.selectedPlaylistPosition);
+  const activeIndex = items.findIndex((item) => item.clip_id === activeClipId);
+  const priorityIndex = Math.max(selectedIndex, activeIndex);
+  if (priorityIndex >= 0) {
+    state.playlistRenderLimit = Math.max(state.playlistRenderLimit, priorityIndex + 1);
+  }
+  state.playlistRenderLimit = Math.min(total, Math.max(state.playlistRenderLimit, PLAYLIST_VIRTUALIZATION_BATCH));
+  return items.slice(0, state.playlistRenderLimit);
+}
+
+function maybeLoadMorePlaylist(force = false) {
+  const items = state.snapshot?.playlist?.items || [];
+  if (!state.playlistVirtualEnabled) return false;
+  if (state.playlistRenderLimit >= items.length) return false;
+  const nearBottom = DOM.playlistItems.scrollTop + DOM.playlistItems.clientHeight >= DOM.playlistItems.scrollHeight - 400;
+  if (!force && !nearBottom) return false;
+  const nextLimit = Math.min(items.length, state.playlistRenderLimit + PLAYLIST_VIRTUALIZATION_BATCH);
+  if (nextLimit === state.playlistRenderLimit) return false;
+  state.playlistRenderLimit = nextLimit;
+  renderPlaylist(state.snapshot?.playlist || { playlist: null, items: [] }, state.snapshot?.transport?.clip_id);
+  return true;
+}
+
+function schedulePlaylistVirtualizationCheck() {
+  if (!state.playlistVirtualEnabled || state.playlistVirtualCheckScheduled) return;
+  state.playlistVirtualCheckScheduled = true;
+  requestAnimationFrame(() => {
+    state.playlistVirtualCheckScheduled = false;
+    if (!state.playlistVirtualEnabled) return;
+    const needsFill = DOM.playlistItems.scrollHeight <= DOM.playlistItems.clientHeight + 120;
+    if (needsFill) {
+      maybeLoadMorePlaylist(true);
+    }
+  });
+}
+
 function normalizeSelection() {
   const clips = state.snapshot?.clips || [];
   const playlistItems = state.snapshot?.playlist?.items || [];
@@ -193,6 +335,194 @@ function normalizeSelection() {
   if (!playlistItems.some((item) => item.position === state.selectedPlaylistPosition)) {
     state.selectedPlaylistPosition = playlistItems[0]?.position || 1;
   }
+}
+
+function clipFromDeckId(deckId) {
+  return state.clipIndex.get(Number(deckId)) || null;
+}
+
+function playlistItemFromPosition(position) {
+  const items = state.snapshot?.playlist?.items || [];
+  return items.find((item) => String(item.position) === String(position)) || null;
+}
+
+function thumbnailUrl(thumbnailPath) {
+  if (!thumbnailPath) return null;
+  return `/thumbs/${thumbnailPath.split('/').pop()}`;
+}
+
+function hideUploadOverlaySoon(delayMs = 900) {
+  if (state.uploadHideTimer) {
+    clearTimeout(state.uploadHideTimer);
+  }
+  state.uploadHideTimer = window.setTimeout(() => {
+    DOM.uploadWrapper.style.display = 'none';
+    DOM.uploadProgress.style.width = '0%';
+    DOM.uploadStatus.textContent = 'IMPORTING MEDIA...';
+    state.uploadHideTimer = null;
+    state.uploadProcessingActive = false;
+  }, delayMs);
+}
+
+function renderUploadProcessingStatus(mediaProcessing) {
+  if (!state.uploadProcessingActive) return;
+  const processing = mediaProcessing || {};
+  const remaining = Number(processing.pending || 0) + Number(processing.processing || 0);
+  const errors = Number(processing.error || 0);
+  if (remaining > 0) {
+    if (state.uploadHideTimer) {
+      clearTimeout(state.uploadHideTimer);
+      state.uploadHideTimer = null;
+    }
+    DOM.uploadWrapper.style.display = 'flex';
+    DOM.uploadProgress.style.width = '65%';
+    DOM.uploadStatus.textContent = `PROCESSING ${remaining} CLIP${remaining > 1 ? 'S' : ''} | ${formatEta(processing.eta_seconds)}${errors ? ` | ${errors} ERROR` : ''}`;
+    return;
+  }
+  DOM.uploadProgress.style.width = '100%';
+  DOM.uploadStatus.textContent = errors ? `IMPORT COMPLETE WITH ${errors} ERROR${errors > 1 ? 'S' : ''}` : 'IMPORT COMPLETE';
+  hideUploadOverlaySoon();
+}
+
+function clipProcessingLabel(clip) {
+  switch (clip.processing_state) {
+    case 'pending':
+      return 'QUEUED';
+    case 'processing':
+      return 'PROCESSING';
+    case 'error':
+      return 'ERROR';
+    default:
+      return '';
+  }
+}
+
+function getOrCreateMediaNode(clip) {
+  const key = String(clip.deck_id);
+  if (!state.mediaNodeCache.has(key)) {
+    state.mediaNodeCache.set(key, Templates.mediaItem.content.firstElementChild.cloneNode(true));
+  }
+  return state.mediaNodeCache.get(key);
+}
+
+function updateMediaNode(node, clip, activeClipId, status) {
+  const idNode = node.querySelector('.media-id');
+  const img = node.querySelector('.thumb-img');
+  const titleNode = node.querySelector('.media-title');
+  const metaNode = node.querySelector('.media-meta');
+  const loopButton = node.querySelector('.ctrl-btn.loop');
+  const statusOverlay = node.querySelector('.status-overlay');
+  const processingLabel = clipProcessingLabel(clip);
+  const playbackActive = clip.deck_id === activeClipId && status === 'play';
+  const overlayLabel = playbackActive ? 'PLAYING' : processingLabel;
+
+  node.dataset.deckId = clip.deck_id;
+  node.dataset.processingState = clip.processing_state || 'ready';
+  idNode.textContent = String(clip.deck_id).padStart(2, '0');
+  titleNode.textContent = clip.name;
+  metaNode.textContent = `${clip.folder} | ${clip.duration_timecode.substring(0, 8)} | ${clip.framerate}fps${clip.is_vertical ? ' | vertical' : ''}${processingLabel ? ` | ${processingLabel}` : ''}`;
+
+  if (clip.thumbnail_path) {
+    const thumbSrc = thumbnailUrl(clip.thumbnail_path);
+    img.loading = 'lazy';
+    img.decoding = 'async';
+    img.fetchPriority = 'low';
+    img.alt = clip.name;
+    img.draggable = false;
+    if (img.getAttribute('src') !== thumbSrc) {
+      img.src = thumbSrc;
+    }
+    img.style.display = '';
+  } else {
+    img.removeAttribute('src');
+    img.removeAttribute('alt');
+    img.style.display = 'none';
+  }
+
+  loopButton.classList.toggle('active-loop', Boolean(clip.loop_enabled));
+  node.classList.toggle('active', clip.deck_id === activeClipId);
+  node.classList.toggle('selected', clip.deck_id === state.selectedClipId);
+  node.classList.toggle('processing', ['pending', 'processing'].includes(clip.processing_state));
+  node.classList.toggle('processing-error', clip.processing_state === 'error');
+  statusOverlay.textContent = overlayLabel || 'PLAYING';
+  statusOverlay.classList.toggle('processing', !playbackActive && ['pending', 'processing'].includes(clip.processing_state));
+  statusOverlay.classList.toggle('error', clip.processing_state === 'error');
+  statusOverlay.style.display = overlayLabel ? 'flex' : 'none';
+}
+
+function getOrCreatePlaylistNode(playlistId, item) {
+  const key = `${playlistId}:${item.position}`;
+  if (!state.playlistNodeCache.has(key)) {
+    state.playlistNodeCache.set(key, Templates.playlistItem.content.firstElementChild.cloneNode(true));
+  }
+  return state.playlistNodeCache.get(key);
+}
+
+function updatePlaylistNode(node, item, activeClipId) {
+  node.dataset.clipId = item.clip_id;
+  node.dataset.position = item.position;
+  node.querySelector('.playlist-item-pos').textContent = String(item.position).padStart(2, '0');
+  node.querySelector('.playlist-item-name').textContent = item.clip_name;
+  node.querySelector('.playlist-item-time').textContent = item.duration_timecode.substring(0, 8);
+  node.classList.toggle('active', item.clip_id === activeClipId);
+  node.classList.toggle('selected', item.position === state.selectedPlaylistPosition);
+}
+
+function getOrCreateFolderCard(folder) {
+  if (!state.folderNodeCache.has(folder)) {
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'folder-card';
+    card.dataset.folder = folder;
+    card.innerHTML = `
+      <div class="folder-card-preview"></div>
+      <div class="folder-card-info">
+        <div class="folder-card-title"></div>
+        <div class="folder-card-meta"></div>
+      </div>
+    `;
+    state.folderNodeCache.set(folder, card);
+  }
+  return state.folderNodeCache.get(folder);
+}
+
+function updateFolderCard(card, folder, folderClips) {
+  card.dataset.folder = folder;
+  card.querySelector('.folder-card-title').textContent = folder;
+  card.querySelector('.folder-card-meta').textContent = `${folderClips.length} clip${folderClips.length > 1 ? 's' : ''}`;
+  const preview = card.querySelector('.folder-card-preview');
+  preview.replaceChildren();
+
+  const thumbClips = folderClips.slice(0, 4);
+  if (thumbClips.length) {
+    const fragment = document.createDocumentFragment();
+    thumbClips.forEach((clip) => {
+      const thumb = document.createElement('div');
+      thumb.className = 'folder-card-thumb';
+      if (clip.thumbnail_path) {
+        const image = document.createElement('img');
+        image.className = 'folder-card-thumb-image';
+        image.loading = 'lazy';
+        image.decoding = 'async';
+        image.fetchPriority = 'low';
+        image.draggable = false;
+        image.alt = clip.name;
+        image.src = thumbnailUrl(clip.thumbnail_path);
+        thumb.appendChild(image);
+      } else {
+        thumb.classList.add('empty');
+        thumb.textContent = clip.name.slice(0, 1).toUpperCase();
+      }
+      fragment.appendChild(thumb);
+    });
+    preview.appendChild(fragment);
+    return;
+  }
+
+  const emptyState = document.createElement('div');
+  emptyState.className = 'folder-card-empty';
+  emptyState.textContent = 'EMPTY';
+  preview.appendChild(emptyState);
 }
 
 async function runShortcut(action, errorTitle) {
@@ -501,6 +831,17 @@ function renderPlaybackCollections() {
 }
 
 function syncPlaylistVisualState(activeClipId = state.snapshot?.transport?.clip_id) {
+  if (state.playlistVirtualEnabled) {
+    const items = state.snapshot?.playlist?.items || [];
+    const selectedIndex = items.findIndex((item) => item.position === state.selectedPlaylistPosition);
+    const activeIndex = items.findIndex((item) => item.clip_id === activeClipId);
+    const requiredLimit = Math.max(selectedIndex, activeIndex) + 1;
+    if (requiredLimit > state.playlistRenderLimit) {
+      state.playlistRenderLimit = Math.min(items.length, requiredLimit + 10);
+      renderPlaylist(state.snapshot?.playlist || { playlist: null, items: [] }, activeClipId);
+      return;
+    }
+  }
   const selectedPosition = String(state.selectedPlaylistPosition || '');
   DOM.playlistItems.querySelectorAll('.playlist-item').forEach((node) => {
     node.classList.toggle('active', node.dataset.clipId === String(activeClipId || ''));
@@ -509,6 +850,15 @@ function syncPlaylistVisualState(activeClipId = state.snapshot?.transport?.clip_
 }
 
 function syncMediaGridVisualState(activeClipId = state.snapshot?.transport?.clip_id, status = state.snapshot?.transport?.status) {
+  if (state.mediaVirtualEnabled) {
+    const clips = filteredClips();
+    const requiredIndex = clips.findIndex((clip) => clip.deck_id === (activeClipId || state.selectedClipId));
+    if (requiredIndex >= 0 && requiredIndex + 1 > state.mediaRenderLimit) {
+      state.mediaRenderLimit = Math.min(clips.length, requiredIndex + 10);
+      renderMediaGrid(clips, activeClipId, status);
+      return;
+    }
+  }
   const selectedClipId = String(state.selectedClipId || '');
   DOM.mediaGrid.querySelectorAll('.media-item').forEach((node) => {
     const isActive = node.dataset.deckId === String(activeClipId || '');
@@ -620,12 +970,19 @@ function renderHealth(health, safety) {
   if (health.clips_last_synced_at) {
     lines.push(`Clip sync: ${formatDateTime(health.clips_last_synced_at)}`);
   }
+  const mediaProcessing = health.media_processing || {};
+  if (mediaProcessing.pending || mediaProcessing.processing || mediaProcessing.error) {
+    const eta = mediaProcessing.eta_seconds == null ? 'ETA --' : formatEta(mediaProcessing.eta_seconds);
+    const throughput = mediaProcessing.clips_per_second ? `${mediaProcessing.clips_per_second} clip/s` : 'warming up';
+    lines.push(`Media processing: queued ${mediaProcessing.pending || 0} | running ${mediaProcessing.processing || 0} | errors ${mediaProcessing.error || 0} | ${eta} | ${throughput}`);
+  }
   if (health.last_error) {
     lines.push(`Last error: ${health.last_error}`);
   } else if (health.player_error) {
     lines.push(`Player error: ${health.player_error}`);
   }
   DOM.healthMeta.textContent = lines.join('\n');
+  renderUploadProcessingStatus(mediaProcessing);
 
   DOM.btnToggleSafeMode.textContent = effectiveSafety.safe_mode_enabled ? 'SAFE MODE ON' : 'SAFE MODE OFF';
   DOM.btnToggleSafeMode.classList.toggle('active', effectiveSafety.safe_mode_enabled);
@@ -788,6 +1145,8 @@ function renderState(snapshot) {
   state.folders = snapshot.folders || state.folders;
   state.playlists = snapshot.playlists || state.playlists;
   reindexClips(snapshot.clips || []);
+  pruneNodeCache(state.mediaNodeCache, new Set((snapshot.clips || []).map((clip) => String(clip.deck_id))));
+  pruneNodeCache(state.folderNodeCache, new Set((snapshot.folders || []).filter((folder) => folder !== 'All')));
   normalizeSelection();
   const { transport, clips, connections, logs, audio, outputs, network, health, safety, display } = snapshot;
   if (snapshot.app_name) {
@@ -883,51 +1242,23 @@ function renderPlaylists() {
 
 function renderPlaylist(playlistPayload, activeClipId) {
   const items = playlistPayload.items || [];
+  const playlistId = playlistPayload.playlist?.id || 'none';
   if (!items.some((item) => item.position === state.selectedPlaylistPosition)) {
     state.selectedPlaylistPosition = items[0]?.position || 1;
   }
   DOM.playlistCount.textContent = `${items.length} items`;
+  const visibleItems = ensurePlaylistRenderLimit(items, playlistId);
   const fragment = document.createDocumentFragment();
-  items.forEach((item) => {
-    const node = Templates.playlistItem.content.firstElementChild.cloneNode(true);
-    const positionNode = node.querySelector('.playlist-item-pos');
-    const nameNode = node.querySelector('.playlist-item-name');
-    const timeNode = node.querySelector('.playlist-item-time');
-    const removeNode = node.querySelector('.playlist-item-remove');
-    node.dataset.clipId = item.clip_id;
-    node.dataset.position = item.position;
-    positionNode.textContent = String(item.position).padStart(2, '0');
-    nameNode.textContent = item.clip_name;
-    timeNode.textContent = item.duration_timecode.substring(0, 8);
-    if (item.clip_id === activeClipId) node.classList.add('active');
-    if (item.position === state.selectedPlaylistPosition) node.classList.add('selected');
-    bindAsync(node, 'click', async () => {
-      state.selectedPlaylistPosition = item.position;
-      state.selectedClipId = item.clip_id;
-      syncPlaylistVisualState(activeClipId);
-      syncMediaGridVisualState();
-      renderPreview();
-      await api(`/api/clips/${item.clip_id}/goto`, { method: 'POST' });
-    }, 'Playlist Error');
-    bindAsync(node, 'dblclick', async () => {
-      const playlistId = playlistPayload.playlist?.id;
-      if (!playlistId) return;
-      state.selectedPlaylistPosition = item.position;
-      await api(`/api/playlists/${playlistId}/play-from`, {
-        method: 'POST',
-        body: JSON.stringify({ position: item.position })
-      });
-    }, 'Playlist Error');
-    bindAsync(removeNode, 'click', async (event) => {
-      event.stopPropagation();
-      const playlistId = playlistPayload.playlist?.id;
-      if (!playlistId) return;
-      await api(`/api/playlists/${playlistId}/items/${item.position}`, { method: 'DELETE' });
-      await refresh();
-    }, 'Playlist Error');
+  const validKeys = new Set(items.map((item) => `${playlistId}:${item.position}`));
+  visibleItems.forEach((item) => {
+    const key = `${playlistId}:${item.position}`;
+    const node = getOrCreatePlaylistNode(playlistId, item);
+    updatePlaylistNode(node, item, activeClipId);
     fragment.appendChild(node);
   });
+  pruneNodeCache(state.playlistNodeCache, validKeys);
   DOM.playlistItems.replaceChildren(fragment);
+  schedulePlaylistVirtualizationCheck();
 }
 
 function renderPreview() {
@@ -952,81 +1283,23 @@ function renderPreview() {
 function renderMediaGrid(clips, activeClipId, status) {
   const folder = currentFolder();
   if (folder === 'All') {
+    state.mediaVirtualEnabled = false;
+    state.mediaVirtualKey = null;
+    state.mediaRenderLimit = 0;
     DOM.mediaGrid.classList.remove('list-view');
     renderFolderCards(clips);
     return;
   }
   DOM.mediaGrid.classList.toggle('list-view', state.mediaView === 'list');
+  const visibleClips = ensureMediaRenderLimit(clips);
   const fragment = document.createDocumentFragment();
-  clips.forEach((clip) => {
-    const node = Templates.mediaItem.content.firstElementChild.cloneNode(true);
-    const idNode = node.querySelector('.media-id');
-    node.dataset.deckId = clip.deck_id;
-    idNode.textContent = String(clip.deck_id).padStart(2, '0');
-    const img = node.querySelector('.thumb-img');
-    const titleNode = node.querySelector('.media-title');
-    const metaNode = node.querySelector('.media-meta');
-    const loopButton = node.querySelector('.ctrl-btn.loop');
-    const statusOverlay = node.querySelector('.status-overlay');
-    if (clip.thumbnail_path) {
-      img.src = `/thumbs/${clip.thumbnail_path.split('/').pop()}`;
-    } else {
-      img.style.display = 'none';
-    }
-    titleNode.textContent = clip.name;
-    metaNode.textContent = `${clip.folder} | ${clip.duration_timecode.substring(0, 8)} | ${clip.framerate}fps${clip.is_vertical ? ' | vertical' : ''}`;
-    if (clip.loop_enabled) loopButton.classList.add('active-loop');
-    if (clip.deck_id === activeClipId) {
-      node.classList.add('active');
-      if (status === 'play') statusOverlay.style.display = 'flex';
-    }
-    if (clip.deck_id === state.selectedClipId) {
-      node.classList.add('selected');
-    }
-    bindAsync(node, 'click', async () => {
-      state.selectedClipId = clip.deck_id;
-      await cueClip(clip.deck_id);
-      syncMediaGridVisualState();
-      renderPreview();
-    }, 'Media Error');
-    node.addEventListener('dragstart', () => {
-      state.dragClipId = clip.deck_id;
-      node.style.opacity = '0.4';
-    });
-    node.addEventListener('dragend', () => {
-      node.style.opacity = '1';
-    });
-    node.addEventListener('dragover', (e) => {
-      e.preventDefault();
-      node.style.transform = 'scale(1.02)';
-    });
-    node.addEventListener('dragleave', () => {
-      node.style.transform = 'none';
-    });
-    bindAsync(node, 'drop', async (e) => {
-      e.preventDefault();
-      node.style.transform = 'none';
-      const from = state.dragClipId;
-      const to = clip.deck_id;
-      if (!from || from === to) return;
-      const order = filteredClips().map((item) => item.deck_id);
-      order.splice(order.indexOf(from), 1);
-      order.splice(order.indexOf(to), 0, from);
-      await api('/api/clips/reorder', { method: 'POST', body: JSON.stringify({ deck_ids: order }) });
-      await refresh();
-    }, 'Media Error');
-    node.querySelectorAll('.ctrl-btn').forEach((button) => {
-      bindAsync(button, 'click', async (event) => {
-        event.stopPropagation();
-        await handleClipAction(clip, button.dataset.action);
-      }, 'Media Error');
-    });
-    bindAsync(node, 'dblclick', async () => {
-      await api(`/api/clips/${clip.deck_id}/play`, { method: 'POST' });
-    }, 'Media Error');
+  visibleClips.forEach((clip) => {
+    const node = getOrCreateMediaNode(clip);
+    updateMediaNode(node, clip, activeClipId, status);
     fragment.appendChild(node);
   });
   DOM.mediaGrid.replaceChildren(fragment);
+  scheduleMediaVirtualizationCheck();
 }
 
 function renderFolderCards(clips) {
@@ -1035,52 +1308,8 @@ function renderFolderCards(clips) {
   const fragment = document.createDocumentFragment();
   folders.forEach((folder) => {
     const folderClips = folderMap.get(folder) || [];
-    const card = document.createElement('button');
-    card.type = 'button';
-    card.className = 'folder-card';
-    card.dataset.folder = folder;
-
-    const preview = document.createElement('div');
-    preview.className = 'folder-card-preview';
-
-    const thumbClips = folderClips.slice(0, 4);
-    if (thumbClips.length) {
-      thumbClips.forEach((clip) => {
-        const thumb = document.createElement('div');
-        thumb.className = 'folder-card-thumb';
-        if (clip.thumbnail_path) {
-          thumb.style.backgroundImage = `url(/thumbs/${clip.thumbnail_path.split('/').pop()})`;
-        } else {
-          thumb.classList.add('empty');
-          thumb.textContent = clip.name.slice(0, 1).toUpperCase();
-        }
-        preview.appendChild(thumb);
-      });
-    } else {
-      const emptyState = document.createElement('div');
-      emptyState.className = 'folder-card-empty';
-      emptyState.textContent = 'EMPTY';
-      preview.appendChild(emptyState);
-    }
-
-    const info = document.createElement('div');
-    info.className = 'folder-card-info';
-
-    const title = document.createElement('div');
-    title.className = 'folder-card-title';
-    title.textContent = folder;
-
-    const meta = document.createElement('div');
-    meta.className = 'folder-card-meta';
-    meta.textContent = `${folderClips.length} clip${folderClips.length > 1 ? 's' : ''}`;
-
-    info.append(title, meta);
-    card.append(preview, info);
-    card.addEventListener('click', () => {
-      DOM.folderFilter.value = folder;
-      renderMediaToolbar();
-      renderMediaGrid(filteredClips(), state.snapshot.transport.clip_id, state.snapshot.transport.status);
-    });
+    const card = getOrCreateFolderCard(folder);
+    updateFolderCard(card, folder, folderClips);
     fragment.appendChild(card);
   });
   DOM.mediaGrid.replaceChildren(fragment);
@@ -1121,6 +1350,12 @@ DOM.dropzone.addEventListener('dragover', (e) => {
   DOM.dropzone.classList.add('dragover');
 });
 DOM.dropzone.addEventListener('dragleave', () => DOM.dropzone.classList.remove('dragover'));
+DOM.dropzone.addEventListener('scroll', () => {
+  maybeLoadMoreMedia();
+});
+DOM.playlistItems.addEventListener('scroll', () => {
+  maybeLoadMorePlaylist();
+});
 bindAsync(DOM.dropzone, 'drop', async (e) => {
   e.preventDefault();
   DOM.dropzone.classList.remove('dragover');
@@ -1132,19 +1367,34 @@ async function uploadFiles(fileList) {
   if (!fileList || !fileList.length) return;
   const formData = new FormData();
   [...fileList].forEach((file) => formData.append('files', file));
+  state.uploadProcessingActive = true;
+  if (state.uploadHideTimer) {
+    clearTimeout(state.uploadHideTimer);
+    state.uploadHideTimer = null;
+  }
   DOM.uploadWrapper.style.display = 'flex';
   DOM.uploadProgress.style.width = '10%';
+  DOM.uploadStatus.textContent = `UPLOADING ${fileList.length} FILE${fileList.length > 1 ? 'S' : ''}...`;
+  let shouldRefresh = !state.websocketConnected;
   try {
-    await api('/api/upload', { method: 'POST', body: formData });
-    DOM.uploadProgress.style.width = '100%';
+    const response = await api('/api/upload', { method: 'POST', body: formData });
+    if (response?.processing === 'background') {
+      DOM.uploadProgress.style.width = '65%';
+      renderUploadProcessingStatus(response.media_processing);
+    } else {
+      DOM.uploadProgress.style.width = '100%';
+      DOM.uploadStatus.textContent = 'IMPORT COMPLETE';
+      hideUploadOverlaySoon();
+    }
   } catch (error) {
+    shouldRefresh = true;
+    state.uploadProcessingActive = false;
     await showNotice('Upload Error', error.message || "Échec de l'upload.");
+    hideUploadOverlaySoon(300);
   } finally {
-    setTimeout(() => {
-      DOM.uploadWrapper.style.display = 'none';
-      DOM.uploadProgress.style.width = '0%';
-    }, 800);
-    await refresh();
+    if (shouldRefresh) {
+      await refresh();
+    }
   }
 }
 
@@ -1240,17 +1490,124 @@ bindAsync(DOM.btnMute, 'click', async () => {
   const muted = DOM.btnMute.classList.contains('muted');
   await api('/api/audio/mute', { method: 'POST', body: JSON.stringify({ muted: !muted }) });
 }, 'Audio Error');
+bindAsync(DOM.playlistItems, 'click', async (event) => {
+  const removeNode = event.target.closest('.playlist-item-remove');
+  const playlistNode = event.target.closest('.playlist-item');
+  if (!playlistNode) return;
+  const item = playlistItemFromPosition(playlistNode.dataset.position);
+  if (!item) return;
+  if (removeNode) {
+    event.stopPropagation();
+    const playlistId = state.snapshot?.playlist?.playlist?.id;
+    if (!playlistId) return;
+    await api(`/api/playlists/${playlistId}/items/${item.position}`, { method: 'DELETE' });
+    await refresh();
+    return;
+  }
+  state.selectedPlaylistPosition = item.position;
+  state.selectedClipId = item.clip_id;
+  syncPlaylistVisualState();
+  syncMediaGridVisualState();
+  renderPreview();
+  await api(`/api/clips/${item.clip_id}/goto`, { method: 'POST' });
+}, 'Playlist Error');
+bindAsync(DOM.playlistItems, 'dblclick', async (event) => {
+  if (event.target.closest('.playlist-item-remove')) return;
+  const playlistNode = event.target.closest('.playlist-item');
+  if (!playlistNode) return;
+  const item = playlistItemFromPosition(playlistNode.dataset.position);
+  const playlistId = state.snapshot?.playlist?.playlist?.id;
+  if (!item || !playlistId) return;
+  state.selectedPlaylistPosition = item.position;
+  syncPlaylistVisualState();
+  await api(`/api/playlists/${playlistId}/play-from`, {
+    method: 'POST',
+    body: JSON.stringify({ position: item.position })
+  });
+}, 'Playlist Error');
+bindAsync(DOM.mediaGrid, 'click', async (event) => {
+  const folderCard = event.target.closest('.folder-card');
+  if (folderCard) {
+    DOM.folderFilter.value = folderCard.dataset.folder || 'All';
+    renderMediaToolbar();
+    renderMediaGrid(filteredClips(), state.snapshot.transport.clip_id, state.snapshot.transport.status);
+    return;
+  }
+  const mediaItem = event.target.closest('.media-item');
+  if (!mediaItem) return;
+  const controlButton = event.target.closest('.ctrl-btn');
+  const clip = clipFromDeckId(mediaItem.dataset.deckId);
+  if (!clip) return;
+  if (controlButton) {
+    event.stopPropagation();
+    await handleClipAction(clip, controlButton.dataset.action);
+    return;
+  }
+  state.selectedClipId = clip.deck_id;
+  syncMediaGridVisualState();
+  await cueClip(clip.deck_id);
+  renderPreview();
+}, 'Media Error');
+bindAsync(DOM.mediaGrid, 'dblclick', async (event) => {
+  if (event.target.closest('.ctrl-btn') || event.target.closest('.folder-card')) return;
+  const mediaItem = event.target.closest('.media-item');
+  if (!mediaItem) return;
+  const clip = clipFromDeckId(mediaItem.dataset.deckId);
+  if (!clip) return;
+  await api(`/api/clips/${clip.deck_id}/play`, { method: 'POST' });
+}, 'Media Error');
+DOM.mediaGrid.addEventListener('dragstart', (event) => {
+  const mediaItem = event.target.closest('.media-item');
+  if (!mediaItem) return;
+  state.dragClipId = Number(mediaItem.dataset.deckId);
+  mediaItem.style.opacity = '0.4';
+});
+DOM.mediaGrid.addEventListener('dragend', (event) => {
+  const mediaItem = event.target.closest('.media-item');
+  if (!mediaItem) return;
+  mediaItem.style.opacity = '1';
+  mediaItem.style.transform = 'none';
+  state.dragClipId = null;
+});
+DOM.mediaGrid.addEventListener('dragover', (event) => {
+  const mediaItem = event.target.closest('.media-item');
+  if (!mediaItem) return;
+  event.preventDefault();
+  mediaItem.style.transform = 'scale(1.02)';
+});
+DOM.mediaGrid.addEventListener('dragleave', (event) => {
+  const mediaItem = event.target.closest('.media-item');
+  if (!mediaItem || mediaItem.contains(event.relatedTarget)) return;
+  mediaItem.style.transform = 'none';
+});
+bindAsync(DOM.mediaGrid, 'drop', async (event) => {
+  const mediaItem = event.target.closest('.media-item');
+  if (!mediaItem) return;
+  event.preventDefault();
+  mediaItem.style.transform = 'none';
+  const from = state.dragClipId;
+  const to = Number(mediaItem.dataset.deckId);
+  if (!from || from === to) return;
+  const order = filteredClips().map((item) => item.deck_id);
+  order.splice(order.indexOf(from), 1);
+  order.splice(order.indexOf(to), 0, from);
+  await api('/api/clips/reorder', { method: 'POST', body: JSON.stringify({ deck_ids: order }) });
+  await refresh();
+}, 'Media Error');
 DOM.folderFilter.addEventListener('change', () => {
+  DOM.dropzone.scrollTop = 0;
   renderMediaToolbar();
   renderMediaGrid(filteredClips(), state.snapshot.transport.clip_id, state.snapshot.transport.status);
 });
 DOM.btnBackAll.addEventListener('click', () => {
   DOM.folderFilter.value = 'All';
+  DOM.dropzone.scrollTop = 0;
   renderMediaToolbar();
   renderMediaGrid(filteredClips(), state.snapshot.transport.clip_id, state.snapshot.transport.status);
 });
 DOM.btnToggleMediaView.addEventListener('click', () => {
   state.mediaView = state.mediaView === 'grid' ? 'list' : 'grid';
+  DOM.dropzone.scrollTop = 0;
   renderMediaToolbar();
   renderMediaGrid(filteredClips(), state.snapshot.transport.clip_id, state.snapshot.transport.status);
 });
@@ -1264,6 +1621,7 @@ bindAsync(DOM.btnNewFolder, 'click', async () => {
   await api('/api/media/folders', { method: 'POST', body: JSON.stringify({ name }) });
   await refresh();
   DOM.folderFilter.value = name;
+  DOM.dropzone.scrollTop = 0;
   renderMediaGrid(filteredClips(), state.snapshot.transport.clip_id, state.snapshot.transport.status);
 }, 'Media Error');
 bindAsync(DOM.btnMoveFolder, 'click', async () => {
@@ -1284,6 +1642,7 @@ bindAsync(DOM.btnMoveFolder, 'click', async () => {
   await api(`/api/clips/${clip.deck_id}/folder`, { method: 'PATCH', body: JSON.stringify({ folder: targetFolder }) });
   await refresh();
   DOM.folderFilter.value = targetFolder;
+  DOM.dropzone.scrollTop = 0;
   renderMediaGrid(filteredClips(), state.snapshot.transport.clip_id, state.snapshot.transport.status);
 }, 'Media Error');
 DOM.previewModal.addEventListener('click', (event) => {
@@ -1395,6 +1754,9 @@ function scheduleWebSocketReconnect() {
 function setupWebSocket() {
   const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
   const socket = new WebSocket(`${protocol}://${location.host}/ws`);
+  socket.addEventListener('open', () => {
+    state.websocketConnected = true;
+  });
   socket.addEventListener('message', (event) => {
     let message;
     try {
@@ -1479,7 +1841,10 @@ function setupWebSocket() {
       return;
     }
   });
-  socket.addEventListener('close', scheduleWebSocketReconnect);
+  socket.addEventListener('close', () => {
+    state.websocketConnected = false;
+    scheduleWebSocketReconnect();
+  });
 }
 
 async function initializeApp() {

@@ -105,12 +105,24 @@ def build_app(
 
     static_dir = Path(__file__).resolve().parent.parent / 'static'
     app.mount('/static', StaticFiles(directory=static_dir), name='static')
-    app.mount('/thumbs', StaticFiles(directory=controller.config.thumbnails_dir), name='thumbs')
     app.mount('/media', StaticFiles(directory=controller.config.clips_dir), name='media')
 
     @app.get('/')
     async def index() -> FileResponse:
         return FileResponse(static_dir / 'index.html')
+
+    @app.get('/thumbs/{thumb_name}')
+    async def get_thumbnail(thumb_name: str) -> FileResponse:
+        safe_name = Path(thumb_name).name
+        thumb_path = Path(controller.config.thumbnails_dir) / safe_name
+        if not thumb_path.exists() or not thumb_path.is_file():
+            raise HTTPException(status_code=404, detail='Thumbnail not found')
+        return FileResponse(
+            thumb_path,
+            headers={
+                'Cache-Control': 'public, max-age=31536000, immutable',
+            },
+        )
 
     @app.get('/api/state')
     async def get_state() -> dict[str, Any]:
@@ -217,15 +229,21 @@ def build_app(
 
     @app.post('/api/upload')
     async def upload(files: list[UploadFile] = File(...)) -> dict[str, Any]:
-        uploads: list[tuple[str, bytes]] = []
-        for item in files:
-            suffix = Path(item.filename or '').suffix.lower()
-            if suffix not in controller.config.allowed_upload_extensions:
-                raise HTTPException(status_code=400, detail=f'Unsupported file type: {suffix}')
-            uploads.append((item.filename or 'clip.bin', await item.read()))
-        await clip_store.save_uploads(uploads)
-        await controller.refresh_clips()
-        return {'uploaded': len(uploads)}
+        try:
+            for item in files:
+                suffix = Path(item.filename or '').suffix.lower()
+                if suffix not in controller.config.allowed_upload_extensions:
+                    raise HTTPException(status_code=400, detail=f'Unsupported file type: {suffix}')
+            await clip_store.save_upload_streams(files)
+            await controller.refresh_clips()
+            return {
+                'uploaded': len(files),
+                'processing': 'background',
+                'media_processing': await clip_store.processing_status(),
+            }
+        finally:
+            for item in files:
+                await item.close()
 
     @app.post('/api/clips/{deck_id}/goto')
     async def goto_clip(deck_id: int) -> dict[str, Any]:

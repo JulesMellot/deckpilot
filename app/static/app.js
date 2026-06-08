@@ -106,6 +106,10 @@ function formatClock(seconds) {
   return `${hrs}:${mins}:${secs}`;
 }
 
+function formatRemainingClock(seconds) {
+  return `-${formatClock(seconds)}`;
+}
+
 function formatDateTime(timestampSeconds) {
   if (!timestampSeconds) return 'n/a';
   return new Date(timestampSeconds * 1000).toLocaleString('en-GB', { hour12: false });
@@ -570,13 +574,21 @@ function renderState(snapshot) {
   DOM.iconPause.style.display = isPlaying ? 'block' : 'none';
   DOM.btnPlay.className = `hw-btn play-btn ${isPlaying ? 'active' : ''}`;
 
-  DOM.liveTimecode.textContent = transport.display_timecode.substring(0, 8);
+  DOM.liveTimecode.textContent = formatRemainingClock(transport.remaining_seconds);
   DOM.liveRemaining.textContent = formatClock(transport.remaining_seconds);
   DOM.liveDuration.textContent = formatClock(transport.total_seconds);
   const currentClip = clips.find((clip) => clip.deck_id === transport.clip_id);
   DOM.liveClipName.textContent = currentClip ? currentClip.name : 'NO CLIP LOADED';
   const progress = transport.total_seconds > 0 ? (transport.elapsed_seconds / transport.total_seconds) * 100 : 0;
   DOM.liveProgress.style.width = `${progress}%`;
+  DOM.liveTimecode.classList.remove('warning', 'danger', 'blink');
+  if (isPlaying && transport.total_seconds > 0) {
+    if (transport.remaining_seconds <= 5) {
+      DOM.liveTimecode.classList.add('danger', 'blink');
+    } else if (transport.remaining_seconds <= 10) {
+      DOM.liveTimecode.classList.add('warning', 'blink');
+    }
+  }
 
   if (document.activeElement !== DOM.configFormat) DOM.configFormat.value = transport.video_format;
   if (document.activeElement !== DOM.configVolume) DOM.configVolume.value = audio.volume;

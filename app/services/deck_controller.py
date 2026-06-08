@@ -422,14 +422,17 @@ class DeckController:
                 elapsed = max(0.0, (self._pause_started_at - self._play_started_at) - self._accumulated_pause_seconds)
             else:
                 elapsed = max(0.0, (time.monotonic() - self._play_started_at) - self._accumulated_pause_seconds)
+            if self.state.transport.loop and elapsed >= clip.duration_seconds and clip.duration_seconds > 0:
+                restarted = await self._restart_loop_clip(clip)
+                if not restarted:
+                    await self.stop_playback()
+                continue
             if not self.state.transport.loop and elapsed >= clip.duration_seconds and clip.duration_seconds > 0:
                 if self._playlist_mode:
                     await self.play_next_playlist_item()
                 else:
                     await self.stop_playback()
                 continue
-            if self.state.transport.loop and clip.duration_seconds > 0:
-                elapsed = elapsed % clip.duration_seconds
             remaining = max(0.0, clip.duration_seconds - elapsed)
             await self.state.set_transport(
                 elapsed_seconds=elapsed,
@@ -447,6 +450,27 @@ class DeckController:
 
     async def _publish_health(self) -> None:
         await self.state.publish('health', await self.health_snapshot())
+
+    async def _restart_loop_clip(self, clip) -> bool:
+        restarted = await self.player.play_file(clip.filepath, loop=False, is_vertical=clip.is_vertical)
+        if not restarted:
+            await self._report_error('player', f'Loop restart failed for "{clip.name}": {self.player.last_error or "unknown player error"}')
+            await self._publish_health()
+            return False
+        self._play_started_at = time.monotonic()
+        self._pause_started_at = None
+        self._accumulated_pause_seconds = 0.0
+        await self.state.set_transport(
+            status='play',
+            speed=100,
+            paused=False,
+            elapsed_seconds=0.0,
+            remaining_seconds=clip.duration_seconds,
+            total_seconds=clip.duration_seconds,
+            timecode='00:00:00:00',
+            display_timecode='00:00:00:00',
+        )
+        return True
 
     async def _apply_output_geometry(self, selected_output) -> None:
         width, height = self._canvas_dimensions(selected_output)

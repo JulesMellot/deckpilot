@@ -270,6 +270,21 @@ setup_python_env() {
   "$INSTALL_DIR/.venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt"
 }
 
+configure_console_boot() {
+  command_exists systemctl || return
+  is_linux_sbc || return
+
+  log "Configuring console-only boot for the HDMI appliance output."
+  $SUDO systemctl set-default multi-user.target || warn "Unable to set multi-user.target as the default boot target."
+
+  if $SUDO systemctl list-unit-files display-manager.service >/dev/null 2>&1; then
+    $SUDO systemctl disable display-manager.service >/dev/null 2>&1 || warn "Unable to disable display-manager.service."
+    if $SUDO systemctl is-active --quiet display-manager.service; then
+      $SUDO systemctl stop display-manager.service >/dev/null 2>&1 || warn "Unable to stop display-manager.service."
+    fi
+  fi
+}
+
 install_systemd_service() {
   command_exists systemctl || return
   local service_name="deckpilot.service"
@@ -285,6 +300,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=$RUN_USER
+SupplementaryGroups=audio video render input
 WorkingDirectory=$INSTALL_DIR
 Environment=PIDECK_CONFIG=$INSTALL_DIR/config.json
 ExecStart=$INSTALL_DIR/.venv/bin/python -m app.main
@@ -330,6 +346,8 @@ install_boot_info_service() {
 Description=DeckPilot HDMI Boot Info
 After=network-online.target
 Wants=network-online.target
+Conflicts=getty@tty1.service display-manager.service
+Before=getty@tty1.service display-manager.service
 
 [Service]
 Type=simple
@@ -348,6 +366,7 @@ TTYVTDisallocate=yes
 WantedBy=multi-user.target
 EOF
   $SUDO systemctl daemon-reload
+  configure_console_boot
   $SUDO systemctl enable "$service_name"
   $SUDO systemctl restart "$service_name"
 }

@@ -69,25 +69,22 @@ def render_screen(config: dict, hostname: str, ips: list[str]) -> str:
     primary_ip = next((ip for ip in ips if not ip.startswith('127.')), ips[0] if ips else '127.0.0.1')
     http_url = f'http://{primary_ip}:{http_port}'
     hyperdeck_target = f'{primary_ip}:{hyperdeck_port}'
-    all_ips = ', '.join(ips) if ips else '127.0.0.1'
     lines = [
-        '\033[2J\033[H',
-        '========================================',
-        '              DECKPILOT',
-        '========================================',
+        '\033[2J\033[H\033[?25l\033[40m\033[97m',
         '',
-        f'Hostname:   {hostname}',
-        f'Primary IP: {primary_ip}',
-        f'All IPs:    {all_ips}',
+        'DECKPILOT',
         '',
-        f'Web UI:     {http_url}',
-        f'HyperDeck:  {hyperdeck_target}',
+        f'IP:        {primary_ip}',
+        f'WEB UI:    {http_url}',
+        f'HYPERDECK: {hyperdeck_target}',
         '',
-        'Tip: open the Web UI from another device',
-        'on the same network to control DeckPilot.',
+        'Ecran de veille HDMI actif',
+        'Le bureau du Raspberry Pi doit rester masque.',
         '',
+        f'HOSTNAME:  {hostname}',
         f'Updated: {time.strftime("%Y-%m-%d %H:%M:%S")}',
         '',
+        '\033[0m',
     ]
     return '\n'.join(lines)
 

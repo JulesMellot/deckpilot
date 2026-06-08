@@ -289,7 +289,10 @@ def build_app(
 
     @app.post('/api/system/black')
     async def cut_black() -> dict[str, Any]:
-        await controller.cut_to_black()
+        ok_flag = await controller.cut_to_black()
+        if not ok_flag:
+            detail = controller.player.last_error or controller._last_error or 'Black screen unavailable'
+            raise HTTPException(status_code=503, detail=detail)
         return {'ok': True}
 
     @app.post('/api/system/video-format')

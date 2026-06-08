@@ -45,6 +45,7 @@ chmod +x scripts/install.sh
 The `scripts/install.sh` script is now a Raspberry Pi wrapper that runs the shared bootstrap installer with `/home/pi/pideck` as the target directory and enables a `systemd` service.
 
 On supported Linux SBC installs, the bootstrap also installs an HDMI boot info service that keeps the local screen updated with the current IP address, Web UI URL, and HyperDeck endpoint after boot.
+The installer also switches the Pi to `multi-user.target` so the local HDMI output behaves like a dedicated appliance instead of booting to the Raspberry Pi desktop.
 
 ## HDMI Configuration
 
@@ -126,11 +127,11 @@ python3 scripts/hyperdeck_test_client.py PI_IP 9993
 
 DeckPilot now installs a secondary `systemd` service on supported Linux SBC targets that continuously renders the following information on the local HDMI console:
 
-- hostname
 - primary IP address
 - Web UI URL
 - HyperDeck TCP endpoint
 
+The screen uses a black background and is designed to stay on the local console instead of exposing the Raspberry Pi desktop.
 This makes first boot and reboot recovery easier because the operator can immediately see where to connect from another device on the network.
 
 ## Pi 3B Performance
@@ -144,6 +145,7 @@ This makes first boot and reboot recovery easier because the operator can immedi
 ## Troubleshooting
 
 - No HDMI output: verify `hdmi_force_hotplug=1`, check the correct `hdmi_mode`, then reboot.
+- The Pi still shows the desktop: rerun the installer or bootstrap so it can switch the system to `multi-user.target`, then reboot.
 - ATEM cannot see the deck: verify that port `9993` is listening with `ss -ltnp | grep 9993`.
 - Web UI does not open: check `sudo systemctl status deckpilot.service`.
 - No video playback: test `mpv --fs /path/to/clip.mp4` directly on the Raspberry Pi.

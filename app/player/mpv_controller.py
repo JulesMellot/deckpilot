@@ -76,20 +76,18 @@ class MPVController:
             return None
         async with self._command_lock:
             self._request_id += 1
-            payload = json.dumps({'command': command, 'request_id': self._request_id}).encode('utf-8') + b'\n'
+            request_id = self._request_id
+            payload = json.dumps({'command': command, 'request_id': request_id}).encode('utf-8') + b'\n'
             assert self._writer is not None
             try:
                 self._writer.write(payload)
                 await self._writer.drain()
-                assert self._reader is not None
-                response = await self._reader.readline()
-            except (ConnectionError, BrokenPipeError, json.JSONDecodeError, OSError, RuntimeError) as exc:
+                parsed = await self._read_response(request_id)
+            except (ConnectionError, BrokenPipeError, OSError, RuntimeError) as exc:
                 self.last_error = str(exc)
                 return None
-            if not response:
-                self.last_error = 'mpv IPC returned an empty response'
+            if not parsed:
                 return None
-            parsed = json.loads(response.decode('utf-8'))
             self.last_error = None if parsed.get('error') == 'success' else str(parsed.get('error') or 'unknown mpv error')
             return parsed
 
@@ -141,6 +139,29 @@ class MPVController:
     async def set_video_format(self, video_format: str) -> None:
         self._current_video_format = video_format
 
+    async def _read_response(self, request_id: int) -> dict[str, Any] | None:
+        assert self._reader is not None
+        for _ in range(64):
+            response = await self._reader.readline()
+            if not response:
+                self.last_error = 'mpv IPC returned an empty response'
+                return None
+            try:
+                parsed = json.loads(response.decode('utf-8'))
+            except json.JSONDecodeError as exc:
+                self.last_error = f'invalid mpv IPC response: {exc}'
+                return None
+            if not isinstance(parsed, dict):
+                continue
+            incoming_request_id = parsed.get('request_id')
+            if incoming_request_id is None and parsed.get('event'):
+                continue
+            if incoming_request_id != request_id:
+                continue
+            return parsed
+        self.last_error = f'timed out waiting for mpv IPC response {request_id}'
+        return None
+
     def _startup_profiles(self, log_path: Path) -> list[tuple[str, list[str]]]:
         base_args = [
             self.config.mpv_binary,
@@ -150,6 +171,7 @@ class MPVController:
             '--keep-open=always',
             '--audio-display=no',
             '--terminal=no',
+            '--osd-level=0',
             '--hwdec=auto-safe',
             f'--log-file={log_path}',
             f'--input-ipc-server={self.config.mpv_socket_path}',

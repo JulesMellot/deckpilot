@@ -1,5 +1,6 @@
 const state = {
   snapshot: null,
+  clipIndex: new Map(),
   dragClipId: null,
   selectedClipId: null,
   selectedPlaylistPosition: 1,
@@ -10,6 +11,11 @@ const state = {
   mediaView: 'grid',
   updateStatus: null,
   updatePollTimer: null,
+  updatePollInFlight: false,
+  websocketReconnectTimer: null,
+  volumeCommitTimer: null,
+  volumeCommitInFlight: false,
+  pendingVolume: null,
 };
 
 const DOM = {
@@ -139,6 +145,65 @@ async function api(path, options = {}) {
   return response.status === 204 ? null : response.json();
 }
 
+function getErrorMessage(error, fallback = 'Unexpected error.') {
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === 'string' && error.trim()) return error;
+  return fallback;
+}
+
+function bindAsync(target, eventName, handler, errorTitle = 'Operation Error') {
+  target.addEventListener(eventName, (event) => {
+    Promise.resolve(handler(event)).catch(async (error) => {
+      console.error(error);
+      await showNotice(errorTitle, getErrorMessage(error));
+    });
+  });
+}
+
+function reindexClips(clips) {
+  state.clipIndex = new Map((clips || []).map((clip) => [clip.deck_id, clip]));
+}
+
+function currentFolder() {
+  return DOM.folderFilter.value || 'All';
+}
+
+function buildFolderClipMap(clips) {
+  const folderMap = new Map();
+  (clips || []).forEach((clip) => {
+    if (!folderMap.has(clip.folder)) {
+      folderMap.set(clip.folder, []);
+    }
+    folderMap.get(clip.folder).push(clip);
+  });
+  return folderMap;
+}
+
+function normalizeSelection() {
+  const clips = state.snapshot?.clips || [];
+  const playlistItems = state.snapshot?.playlist?.items || [];
+  if (!clips.length) {
+    state.selectedClipId = null;
+    state.selectedPlaylistPosition = 1;
+    return;
+  }
+  if (!state.clipIndex.has(state.selectedClipId)) {
+    state.selectedClipId = state.snapshot?.transport?.clip_id || clips[0].deck_id;
+  }
+  if (!playlistItems.some((item) => item.position === state.selectedPlaylistPosition)) {
+    state.selectedPlaylistPosition = playlistItems[0]?.position || 1;
+  }
+}
+
+async function runShortcut(action, errorTitle) {
+  try {
+    await action();
+  } catch (error) {
+    console.error(error);
+    await showNotice(errorTitle, getErrorMessage(error));
+  }
+}
+
 function updateClock() {
   DOM.systemClock.textContent = new Date().toLocaleTimeString('fr-FR', { hour12: false });
 }
@@ -170,33 +235,37 @@ document.addEventListener('keydown', (e) => {
   switch (e.code) {
     case 'Space':
       e.preventDefault();
-      togglePlayPause();
+      void runShortcut(() => togglePlayPause(), 'Playback Error');
       break;
     case 'Escape':
       e.preventDefault();
       ensureLiveActionAllowed('Stop playback').then((allowed) => {
-        if (allowed) api('/api/transport/stop', { method: 'POST' }).catch(console.error);
+        if (allowed) {
+          void runShortcut(() => api('/api/transport/stop', { method: 'POST' }), 'Playback Error');
+        }
       });
       break;
     case 'Enter':
       e.preventDefault();
       ensureLiveActionAllowed('Cut to black').then((allowed) => {
-        if (allowed) api('/api/system/black', { method: 'POST' }).catch(console.error);
+        if (allowed) {
+          void runShortcut(() => api('/api/system/black', { method: 'POST' }), 'Playback Error');
+        }
       });
       break;
     case 'ArrowLeft':
       e.preventDefault();
-      playAdjacentClip(-1);
+      void runShortcut(() => playAdjacentClip(-1), 'Playback Error');
       break;
     case 'ArrowRight':
       e.preventDefault();
-      playAdjacentClip(1);
+      void runShortcut(() => playAdjacentClip(1), 'Playback Error');
       break;
   }
 });
 
 function getSelectedClip() {
-  return state.snapshot?.clips?.find((clip) => clip.deck_id === state.selectedClipId) || null;
+  return state.clipIndex.get(state.selectedClipId) || null;
 }
 
 async function cueClip(clipId) {
@@ -217,7 +286,8 @@ async function togglePlayPause() {
   } else if (state.snapshot.transport.playlist_mode) {
     await playPlaylist();
   } else {
-    const clipId = state.snapshot.transport.clip_id || state.selectedClipId || state.snapshot.playlist?.items?.[0]?.clip_id || 1;
+    const clipId = state.snapshot.transport.clip_id || state.selectedClipId || state.snapshot.playlist?.items?.[0]?.clip_id;
+    if (!clipId) return;
     await api(`/api/clips/${clipId}/play`, { method: 'POST' });
   }
 }
@@ -236,7 +306,7 @@ async function playAdjacentClip(direction) {
 
 function filteredClips() {
   const clips = state.snapshot?.clips || [];
-  const folder = DOM.folderFilter.value || 'All';
+  const folder = currentFolder();
   if (folder === 'All') return clips;
   return clips.filter((clip) => clip.folder === folder);
 }
@@ -356,6 +426,124 @@ function openSettingsModal() {
   DOM.settingsModal.hidden = false;
 }
 
+function renderConnectionStatus(connections) {
+  const clients = connections?.clients || [];
+  if (clients.length) {
+    DOM.atemStatus.classList.add('connected');
+    DOM.atemStatus.querySelector('span').textContent = `${clients.length} CTRL CONN.`;
+  } else {
+    DOM.atemStatus.classList.remove('connected');
+    DOM.atemStatus.querySelector('span').textContent = 'ATEM OFFLINE';
+  }
+}
+
+function renderTransport(transport, clips) {
+  if (!transport) return;
+  DOM.liveFormat.textContent = transport.video_format;
+
+  const isPlaying = transport.status === 'play';
+  DOM.tallyBar.textContent = isPlaying ? 'ON AIR' : 'OFF AIR';
+  DOM.tallyBar.className = `tally-indicator ${isPlaying ? 'live' : ''}`;
+  DOM.iconPlay.style.display = isPlaying ? 'none' : 'block';
+  DOM.iconPause.style.display = isPlaying ? 'block' : 'none';
+  DOM.btnPlay.className = `hw-btn play-btn ${isPlaying ? 'active' : ''}`;
+
+  DOM.liveTimecode.textContent = formatRemainingClock(transport.remaining_seconds);
+  DOM.liveRemaining.textContent = formatClock(transport.remaining_seconds);
+  DOM.liveDuration.textContent = formatClock(transport.total_seconds);
+  const currentClip = state.clipIndex.get(transport.clip_id) || (clips || []).find((clip) => clip.deck_id === transport.clip_id);
+  DOM.liveClipName.textContent = currentClip ? currentClip.name : 'NO CLIP LOADED';
+  const progress = transport.total_seconds > 0 ? (transport.elapsed_seconds / transport.total_seconds) * 100 : 0;
+  DOM.liveProgress.style.width = `${progress}%`;
+  DOM.liveTimecode.classList.remove('warning', 'danger', 'blink');
+  if (isPlaying && transport.total_seconds > 0) {
+    if (transport.remaining_seconds <= 5) {
+      DOM.liveTimecode.classList.add('danger', 'blink');
+    } else if (transport.remaining_seconds <= 10) {
+      DOM.liveTimecode.classList.add('warning', 'blink');
+    }
+  }
+
+  if (document.activeElement !== DOM.configFormat) DOM.configFormat.value = transport.video_format;
+  DOM.btnPlayPlaylist.classList.toggle('active', Boolean(transport.playlist_mode && transport.status === 'play'));
+  DOM.btnLoopPlaylist.classList.toggle('active', Boolean(transport.playlist_loop));
+  DOM.btnLoopPlaylist.textContent = transport.playlist_loop ? 'LOOP ON' : 'LOOP';
+}
+
+function renderAudio(audio) {
+  if (!audio) return;
+  if (document.activeElement !== DOM.configVolume && state.pendingVolume === null) {
+    DOM.configVolume.value = audio.volume;
+  }
+  DOM.volumeValue.textContent = `${state.pendingVolume ?? audio.volume}%`;
+  DOM.btnMute.classList.toggle('muted', Boolean(audio.muted));
+}
+
+function renderNetwork(network) {
+  if (network?.hyperdeck_target) {
+    DOM.networkValue.textContent = network.hyperdeck_target;
+  } else {
+    DOM.networkValue.textContent = `${location.hostname}:9993`;
+  }
+}
+
+function renderLogs(logs) {
+  if (!state.logsVisible) return;
+  const logText = (logs || []).slice(-80).map((entry) => `[${entry.created_at.split('T')[1].substring(0, 8)}] ${entry.message}`).join('\n');
+  DOM.terminalLogs.textContent = logText;
+  DOM.terminalLogs.scrollTop = DOM.terminalLogs.scrollHeight;
+}
+
+function renderPlaybackCollections() {
+  normalizeSelection();
+  renderPlaylist(state.snapshot?.playlist || { playlist: null, items: [] }, state.snapshot?.transport?.clip_id);
+  renderMediaGrid(filteredClips(), state.snapshot?.transport?.clip_id, state.snapshot?.transport?.status);
+}
+
+function syncPlaylistVisualState(activeClipId = state.snapshot?.transport?.clip_id) {
+  const selectedPosition = String(state.selectedPlaylistPosition || '');
+  DOM.playlistItems.querySelectorAll('.playlist-item').forEach((node) => {
+    node.classList.toggle('active', node.dataset.clipId === String(activeClipId || ''));
+    node.classList.toggle('selected', node.dataset.position === selectedPosition);
+  });
+}
+
+function syncMediaGridVisualState(activeClipId = state.snapshot?.transport?.clip_id, status = state.snapshot?.transport?.status) {
+  const selectedClipId = String(state.selectedClipId || '');
+  DOM.mediaGrid.querySelectorAll('.media-item').forEach((node) => {
+    const isActive = node.dataset.deckId === String(activeClipId || '');
+    const isSelected = node.dataset.deckId === selectedClipId;
+    node.classList.toggle('active', isActive);
+    node.classList.toggle('selected', isSelected);
+    const overlay = node.querySelector('.status-overlay');
+    if (overlay) {
+      overlay.style.display = isActive && status === 'play' ? 'flex' : 'none';
+    }
+  });
+}
+
+function syncPlaybackCollections() {
+  syncPlaylistVisualState();
+  syncMediaGridVisualState();
+}
+
+function renderCollections() {
+  renderFolders();
+  renderMediaToolbar();
+  renderPlaylists();
+  renderPlaybackCollections();
+  renderPreview();
+}
+
+function transportAffectsCollections(previousTransport, nextTransport) {
+  if (!previousTransport) return true;
+  return previousTransport.clip_id !== nextTransport.clip_id
+    || previousTransport.status !== nextTransport.status
+    || previousTransport.paused !== nextTransport.paused
+    || previousTransport.playlist_mode !== nextTransport.playlist_mode
+    || previousTransport.playlist_loop !== nextTransport.playlist_loop;
+}
+
 function renderUpdateStatus(update) {
   state.updateStatus = update || null;
   if (!update) {
@@ -465,26 +653,78 @@ async function ensureLiveActionAllowed(actionLabel) {
 
 function stopUpdatePolling() {
   if (!state.updatePollTimer) return;
-  clearInterval(state.updatePollTimer);
+  clearTimeout(state.updatePollTimer);
   state.updatePollTimer = null;
+  state.updatePollInFlight = false;
 }
 
 function startUpdatePolling() {
   if (state.updatePollTimer) return;
   const poll = async () => {
+    state.updatePollTimer = null;
+    if (state.updatePollInFlight) return;
+    state.updatePollInFlight = true;
     try {
       const update = await api('/api/system/update');
       renderUpdateStatus(update);
-      if (!['running', 'restarting', 'rebooting'].includes(update.phase)) {
+      const busy = ['running', 'restarting', 'rebooting'].includes(update.phase);
+      if (!busy) {
         stopUpdatePolling();
-        await refresh();
+        await refresh({ includeUpdate: false });
+        return;
       }
     } catch (error) {
       DOM.updateMeta.textContent = 'Updating DeckPilot...\nWaiting for the service restart or Raspberry Pi reboot...';
+    } finally {
+      state.updatePollInFlight = false;
     }
+    state.updatePollTimer = window.setTimeout(poll, 2000);
   };
-  state.updatePollTimer = setInterval(poll, 2000);
-  poll();
+  state.updatePollTimer = window.setTimeout(poll, 0);
+}
+
+function scheduleVolumeCommit(volume) {
+  state.pendingVolume = volume;
+  DOM.volumeValue.textContent = `${volume}%`;
+  if (state.snapshot?.audio) {
+    state.snapshot.audio.volume = volume;
+  }
+  if (state.volumeCommitTimer) {
+    clearTimeout(state.volumeCommitTimer);
+  }
+  state.volumeCommitTimer = window.setTimeout(() => {
+    state.volumeCommitTimer = null;
+    void commitVolumeChange();
+  }, 160);
+}
+
+async function commitVolumeChange() {
+  if (state.volumeCommitInFlight) return;
+  const volume = state.pendingVolume;
+  if (volume === null) return;
+  state.volumeCommitInFlight = true;
+  try {
+    await api('/api/audio/volume', { method: 'POST', body: JSON.stringify({ volume }) });
+    if (state.pendingVolume === volume) {
+      state.pendingVolume = null;
+    }
+  } catch (error) {
+    console.error(error);
+    state.pendingVolume = null;
+    if (state.snapshot?.audio) {
+      DOM.configVolume.value = state.snapshot.audio.volume;
+      DOM.volumeValue.textContent = `${state.snapshot.audio.volume}%`;
+    }
+    await showNotice('Volume Error', getErrorMessage(error));
+  } finally {
+    state.volumeCommitInFlight = false;
+    if (state.pendingVolume !== null && state.pendingVolume !== volume && !state.volumeCommitTimer) {
+      state.volumeCommitTimer = window.setTimeout(() => {
+        state.volumeCommitTimer = null;
+        void commitVolumeChange();
+      }, 80);
+    }
+  }
 }
 
 function setLogsVisible(enabled) {
@@ -493,11 +733,7 @@ function setLogsVisible(enabled) {
   DOM.btnToggleLogs.classList.toggle('active', enabled);
   DOM.btnToggleLogs.textContent = enabled ? 'LOGS ON' : 'LOGS OFF';
   DOM.panelRight.classList.toggle('logs-hidden', !enabled);
-  if (enabled && state.snapshot?.logs) {
-    const logText = state.snapshot.logs.slice(-80).map((entry) => `[${entry.created_at.split('T')[1].substring(0, 8)}] ${entry.message}`).join('\n');
-    DOM.terminalLogs.textContent = logText;
-    DOM.terminalLogs.scrollTop = DOM.terminalLogs.scrollHeight;
-  }
+  if (enabled) renderLogs(state.snapshot?.logs || []);
 }
 
 function openPreviewModal(clipId) {
@@ -549,88 +785,37 @@ async function clearCurrentPlaylist() {
 
 function renderState(snapshot) {
   state.snapshot = snapshot;
-  const { transport, clips, connections, logs, audio, outputs, playlist, network, health, safety, display } = snapshot;
-  if (!state.selectedClipId && clips.length) {
-    state.selectedClipId = clips[0].deck_id;
-  }
-
-  DOM.liveFormat.textContent = transport.video_format;
+  state.folders = snapshot.folders || state.folders;
+  state.playlists = snapshot.playlists || state.playlists;
+  reindexClips(snapshot.clips || []);
+  normalizeSelection();
+  const { transport, clips, connections, logs, audio, outputs, network, health, safety, display } = snapshot;
   if (snapshot.app_name) {
     DOM.appName.textContent = String(snapshot.app_name).toUpperCase();
   }
-  const clients = connections.clients || [];
-  if (clients.length) {
-    DOM.atemStatus.classList.add('connected');
-    DOM.atemStatus.querySelector('span').textContent = `${clients.length} CTRL CONN.`;
-  } else {
-    DOM.atemStatus.classList.remove('connected');
-    DOM.atemStatus.querySelector('span').textContent = 'ATEM OFFLINE';
-  }
-
-  const isPlaying = transport.status === 'play';
-  DOM.tallyBar.textContent = isPlaying ? 'ON AIR' : 'OFF AIR';
-  DOM.tallyBar.className = `tally-indicator ${isPlaying ? 'live' : ''}`;
-  DOM.iconPlay.style.display = isPlaying ? 'none' : 'block';
-  DOM.iconPause.style.display = isPlaying ? 'block' : 'none';
-  DOM.btnPlay.className = `hw-btn play-btn ${isPlaying ? 'active' : ''}`;
-
-  DOM.liveTimecode.textContent = formatRemainingClock(transport.remaining_seconds);
-  DOM.liveRemaining.textContent = formatClock(transport.remaining_seconds);
-  DOM.liveDuration.textContent = formatClock(transport.total_seconds);
-  const currentClip = clips.find((clip) => clip.deck_id === transport.clip_id);
-  DOM.liveClipName.textContent = currentClip ? currentClip.name : 'NO CLIP LOADED';
-  const progress = transport.total_seconds > 0 ? (transport.elapsed_seconds / transport.total_seconds) * 100 : 0;
-  DOM.liveProgress.style.width = `${progress}%`;
-  DOM.liveTimecode.classList.remove('warning', 'danger', 'blink');
-  if (isPlaying && transport.total_seconds > 0) {
-    if (transport.remaining_seconds <= 5) {
-      DOM.liveTimecode.classList.add('danger', 'blink');
-    } else if (transport.remaining_seconds <= 10) {
-      DOM.liveTimecode.classList.add('warning', 'blink');
-    }
-  }
-
-  if (document.activeElement !== DOM.configFormat) DOM.configFormat.value = transport.video_format;
-  if (document.activeElement !== DOM.configVolume) DOM.configVolume.value = audio.volume;
-  DOM.volumeValue.textContent = `${audio.volume}%`;
-  DOM.btnMute.classList.toggle('muted', Boolean(audio.muted));
-  DOM.btnPlayPlaylist.classList.toggle('active', Boolean(transport.playlist_mode && transport.status === 'play'));
-  DOM.btnLoopPlaylist.classList.toggle('active', Boolean(transport.playlist_loop));
-  DOM.btnLoopPlaylist.textContent = transport.playlist_loop ? 'LOOP ON' : 'LOOP';
-  if (network?.hyperdeck_target) {
-    DOM.networkValue.textContent = network.hyperdeck_target;
-  } else {
-    DOM.networkValue.textContent = `${location.hostname}:9993`;
-  }
-
+  renderConnectionStatus(connections || {});
+  renderTransport(transport, clips);
+  renderAudio(audio || { volume: 100, muted: false });
+  renderNetwork(network);
   renderOutputs(outputs || []);
   renderDisplaySettings(display || {});
-  renderFolders();
-  renderMediaToolbar();
-  renderPlaylists();
-  renderPlaylist(playlist || { playlist: null, items: [] }, transport.clip_id);
-  renderMediaGrid(filteredClips(), transport.clip_id, transport.status);
-  renderPreview();
+  renderCollections();
   renderHealth(health, safety);
   setLogsVisible(state.logsVisible);
-
-  const logText = (logs || []).slice(-80).map((entry) => `[${entry.created_at.split('T')[1].substring(0, 8)}] ${entry.message}`).join('\n');
-  if (state.logsVisible) {
-    DOM.terminalLogs.textContent = logText;
-    DOM.terminalLogs.scrollTop = DOM.terminalLogs.scrollHeight;
-  }
+  renderLogs(logs || []);
 }
 
 function renderOutputs(outputs) {
   const previous = DOM.configOutput.value;
-  DOM.configOutput.innerHTML = '';
+  const fragment = document.createDocumentFragment();
   outputs.forEach((output) => {
     const option = document.createElement('option');
     option.value = output.id;
     option.textContent = output.label;
     option.selected = output.selected;
-    DOM.configOutput.appendChild(option);
+    fragment.appendChild(option);
   });
+  DOM.configOutput.replaceChildren(fragment);
   if (previous && outputs.some((output) => output.id === previous)) {
     DOM.configOutput.value = previous;
   }
@@ -639,14 +824,15 @@ function renderOutputs(outputs) {
 function renderDisplaySettings(display) {
   const previous = DOM.configCanvas.value;
   const modes = display.available_canvas_modes || ['auto'];
-  DOM.configCanvas.innerHTML = '';
+  const fragment = document.createDocumentFragment();
   modes.forEach((mode) => {
     const option = document.createElement('option');
     option.value = mode;
     option.textContent = mode === 'auto' ? 'AUTO (DETECTION)' : mode;
     option.selected = mode === (display.canvas_mode || 'auto');
-    DOM.configCanvas.appendChild(option);
+    fragment.appendChild(option);
   });
+  DOM.configCanvas.replaceChildren(fragment);
   if (previous && modes.includes(previous)) {
     DOM.configCanvas.value = previous;
   } else {
@@ -656,20 +842,21 @@ function renderDisplaySettings(display) {
 
 function renderFolders() {
   const previous = DOM.folderFilter.value || 'All';
-  DOM.folderFilter.innerHTML = '';
   const values = ['All', ...state.folders.filter((folder) => folder !== 'All')];
+  const fragment = document.createDocumentFragment();
   values.forEach((folder) => {
     const option = document.createElement('option');
     option.value = folder;
     option.textContent = folder;
-    DOM.folderFilter.appendChild(option);
+    fragment.appendChild(option);
   });
+  DOM.folderFilter.replaceChildren(fragment);
   DOM.folderFilter.value = values.includes(previous) ? previous : 'All';
 }
 
 function renderMediaToolbar() {
-  const currentFolder = DOM.folderFilter.value || 'All';
-  const isAll = currentFolder === 'All';
+  const folder = currentFolder();
+  const isAll = folder === 'All';
   DOM.btnBackAll.hidden = isAll;
   DOM.btnToggleMediaView.hidden = isAll;
   DOM.btnToggleMediaView.textContent = state.mediaView === 'grid' ? 'LIST' : 'GRID';
@@ -678,13 +865,14 @@ function renderMediaToolbar() {
 
 function renderPlaylists() {
   const previous = DOM.playlistSelect.value;
-  DOM.playlistSelect.innerHTML = '';
+  const fragment = document.createDocumentFragment();
   state.playlists.forEach((playlist) => {
     const option = document.createElement('option');
     option.value = playlist.id;
     option.textContent = playlist.is_active ? `${playlist.name} *` : playlist.name;
-    DOM.playlistSelect.appendChild(option);
+    fragment.appendChild(option);
   });
+  DOM.playlistSelect.replaceChildren(fragment);
   const active = state.snapshot?.playlist?.playlist?.id;
   if (previous && state.playlists.some((playlist) => String(playlist.id) === previous)) {
     DOM.playlistSelect.value = previous;
@@ -699,24 +887,29 @@ function renderPlaylist(playlistPayload, activeClipId) {
     state.selectedPlaylistPosition = items[0]?.position || 1;
   }
   DOM.playlistCount.textContent = `${items.length} items`;
-  DOM.playlistItems.innerHTML = '';
+  const fragment = document.createDocumentFragment();
   items.forEach((item) => {
     const node = Templates.playlistItem.content.firstElementChild.cloneNode(true);
+    const positionNode = node.querySelector('.playlist-item-pos');
+    const nameNode = node.querySelector('.playlist-item-name');
+    const timeNode = node.querySelector('.playlist-item-time');
+    const removeNode = node.querySelector('.playlist-item-remove');
     node.dataset.clipId = item.clip_id;
     node.dataset.position = item.position;
-    node.querySelector('.playlist-item-pos').textContent = String(item.position).padStart(2, '0');
-    node.querySelector('.playlist-item-name').textContent = item.clip_name;
-    node.querySelector('.playlist-item-time').textContent = item.duration_timecode.substring(0, 8);
+    positionNode.textContent = String(item.position).padStart(2, '0');
+    nameNode.textContent = item.clip_name;
+    timeNode.textContent = item.duration_timecode.substring(0, 8);
     if (item.clip_id === activeClipId) node.classList.add('active');
     if (item.position === state.selectedPlaylistPosition) node.classList.add('selected');
-    node.addEventListener('click', async () => {
+    bindAsync(node, 'click', async () => {
       state.selectedPlaylistPosition = item.position;
       state.selectedClipId = item.clip_id;
-      renderPlaylist(playlistPayload, activeClipId);
+      syncPlaylistVisualState(activeClipId);
+      syncMediaGridVisualState();
       renderPreview();
       await api(`/api/clips/${item.clip_id}/goto`, { method: 'POST' });
-    });
-    node.addEventListener('dblclick', async () => {
+    }, 'Playlist Error');
+    bindAsync(node, 'dblclick', async () => {
       const playlistId = playlistPayload.playlist?.id;
       if (!playlistId) return;
       state.selectedPlaylistPosition = item.position;
@@ -724,16 +917,17 @@ function renderPlaylist(playlistPayload, activeClipId) {
         method: 'POST',
         body: JSON.stringify({ position: item.position })
       });
-    });
-    node.querySelector('.playlist-item-remove').addEventListener('click', async (event) => {
+    }, 'Playlist Error');
+    bindAsync(removeNode, 'click', async (event) => {
       event.stopPropagation();
       const playlistId = playlistPayload.playlist?.id;
       if (!playlistId) return;
       await api(`/api/playlists/${playlistId}/items/${item.position}`, { method: 'DELETE' });
       await refresh();
-    });
-    DOM.playlistItems.appendChild(node);
+    }, 'Playlist Error');
+    fragment.appendChild(node);
   });
+  DOM.playlistItems.replaceChildren(fragment);
 }
 
 function renderPreview() {
@@ -756,40 +950,45 @@ function renderPreview() {
 }
 
 function renderMediaGrid(clips, activeClipId, status) {
-  DOM.mediaGrid.innerHTML = '';
-  const currentFolder = DOM.folderFilter.value || 'All';
-  if (currentFolder === 'All') {
+  const folder = currentFolder();
+  if (folder === 'All') {
     DOM.mediaGrid.classList.remove('list-view');
     renderFolderCards(clips);
     return;
   }
   DOM.mediaGrid.classList.toggle('list-view', state.mediaView === 'list');
+  const fragment = document.createDocumentFragment();
   clips.forEach((clip) => {
     const node = Templates.mediaItem.content.firstElementChild.cloneNode(true);
+    const idNode = node.querySelector('.media-id');
     node.dataset.deckId = clip.deck_id;
-    node.querySelector('.media-id').textContent = String(clip.deck_id).padStart(2, '0');
+    idNode.textContent = String(clip.deck_id).padStart(2, '0');
     const img = node.querySelector('.thumb-img');
+    const titleNode = node.querySelector('.media-title');
+    const metaNode = node.querySelector('.media-meta');
+    const loopButton = node.querySelector('.ctrl-btn.loop');
+    const statusOverlay = node.querySelector('.status-overlay');
     if (clip.thumbnail_path) {
       img.src = `/thumbs/${clip.thumbnail_path.split('/').pop()}`;
     } else {
       img.style.display = 'none';
     }
-    node.querySelector('.media-title').textContent = clip.name;
-    node.querySelector('.media-meta').textContent = `${clip.folder} | ${clip.duration_timecode.substring(0, 8)} | ${clip.framerate}fps${clip.is_vertical ? ' | vertical' : ''}`;
-    if (clip.loop_enabled) node.querySelector('.ctrl-btn.loop').classList.add('active-loop');
+    titleNode.textContent = clip.name;
+    metaNode.textContent = `${clip.folder} | ${clip.duration_timecode.substring(0, 8)} | ${clip.framerate}fps${clip.is_vertical ? ' | vertical' : ''}`;
+    if (clip.loop_enabled) loopButton.classList.add('active-loop');
     if (clip.deck_id === activeClipId) {
       node.classList.add('active');
-      if (status === 'play') node.querySelector('.status-overlay').style.display = 'flex';
+      if (status === 'play') statusOverlay.style.display = 'flex';
     }
     if (clip.deck_id === state.selectedClipId) {
-      node.style.boxShadow = 'inset 0 0 0 2px var(--color-accent)';
+      node.classList.add('selected');
     }
-    node.addEventListener('click', async () => {
+    bindAsync(node, 'click', async () => {
       state.selectedClipId = clip.deck_id;
       await cueClip(clip.deck_id);
-      renderMediaGrid(filteredClips(), state.snapshot.transport.clip_id, state.snapshot.transport.status);
+      syncMediaGridVisualState();
       renderPreview();
-    });
+    }, 'Media Error');
     node.addEventListener('dragstart', () => {
       state.dragClipId = clip.deck_id;
       node.style.opacity = '0.4';
@@ -804,7 +1003,7 @@ function renderMediaGrid(clips, activeClipId, status) {
     node.addEventListener('dragleave', () => {
       node.style.transform = 'none';
     });
-    node.addEventListener('drop', async (e) => {
+    bindAsync(node, 'drop', async (e) => {
       e.preventDefault();
       node.style.transform = 'none';
       const from = state.dragClipId;
@@ -815,24 +1014,27 @@ function renderMediaGrid(clips, activeClipId, status) {
       order.splice(order.indexOf(to), 0, from);
       await api('/api/clips/reorder', { method: 'POST', body: JSON.stringify({ deck_ids: order }) });
       await refresh();
-    });
+    }, 'Media Error');
     node.querySelectorAll('.ctrl-btn').forEach((button) => {
-      button.addEventListener('click', async (event) => {
+      bindAsync(button, 'click', async (event) => {
         event.stopPropagation();
         await handleClipAction(clip, button.dataset.action);
-      });
+      }, 'Media Error');
     });
-    node.addEventListener('dblclick', async () => {
+    bindAsync(node, 'dblclick', async () => {
       await api(`/api/clips/${clip.deck_id}/play`, { method: 'POST' });
-    });
-    DOM.mediaGrid.appendChild(node);
+    }, 'Media Error');
+    fragment.appendChild(node);
   });
+  DOM.mediaGrid.replaceChildren(fragment);
 }
 
 function renderFolderCards(clips) {
   const folders = state.folders.filter((folder) => folder !== 'All');
+  const folderMap = buildFolderClipMap(clips);
+  const fragment = document.createDocumentFragment();
   folders.forEach((folder) => {
-    const folderClips = clips.filter((clip) => clip.folder === folder);
+    const folderClips = folderMap.get(folder) || [];
     const card = document.createElement('button');
     card.type = 'button';
     card.className = 'folder-card';
@@ -879,8 +1081,9 @@ function renderFolderCards(clips) {
       renderMediaToolbar();
       renderMediaGrid(filteredClips(), state.snapshot.transport.clip_id, state.snapshot.transport.status);
     });
-    DOM.mediaGrid.appendChild(card);
+    fragment.appendChild(card);
   });
+  DOM.mediaGrid.replaceChildren(fragment);
 }
 
 async function handleClipAction(clip, action) {
@@ -918,12 +1121,12 @@ DOM.dropzone.addEventListener('dragover', (e) => {
   DOM.dropzone.classList.add('dragover');
 });
 DOM.dropzone.addEventListener('dragleave', () => DOM.dropzone.classList.remove('dragover'));
-DOM.dropzone.addEventListener('drop', async (e) => {
+bindAsync(DOM.dropzone, 'drop', async (e) => {
   e.preventDefault();
   DOM.dropzone.classList.remove('dragover');
   await uploadFiles(e.dataTransfer.files);
-});
-DOM.fileInput.addEventListener('change', async () => uploadFiles(DOM.fileInput.files));
+}, 'Upload Error');
+bindAsync(DOM.fileInput, 'change', async () => uploadFiles(DOM.fileInput.files), 'Upload Error');
 
 async function uploadFiles(fileList) {
   if (!fileList || !fileList.length) return;
@@ -945,36 +1148,36 @@ async function uploadFiles(fileList) {
   }
 }
 
-DOM.btnPlay.addEventListener('click', togglePlayPause);
-DOM.btnStop.addEventListener('click', async () => {
+bindAsync(DOM.btnPlay, 'click', togglePlayPause, 'Playback Error');
+bindAsync(DOM.btnStop, 'click', async () => {
   if (!await ensureLiveActionAllowed('Stop playback')) return;
   await api('/api/transport/stop', { method: 'POST' });
-});
-DOM.btnPrev.addEventListener('click', () => playAdjacentClip(-1));
-DOM.btnNext.addEventListener('click', () => playAdjacentClip(1));
-DOM.btnBlack.addEventListener('click', async () => {
+}, 'Playback Error');
+bindAsync(DOM.btnPrev, 'click', async () => playAdjacentClip(-1), 'Playback Error');
+bindAsync(DOM.btnNext, 'click', async () => playAdjacentClip(1), 'Playback Error');
+bindAsync(DOM.btnBlack, 'click', async () => {
   if (!await ensureLiveActionAllowed('Cut to black')) return;
   await api('/api/system/black', { method: 'POST' });
-});
-DOM.btnRefreshMedia.addEventListener('click', refresh);
+}, 'Playback Error');
+bindAsync(DOM.btnRefreshMedia, 'click', refresh, 'Refresh Error');
 DOM.btnToggleLogs.addEventListener('click', () => setLogsVisible(!state.logsVisible));
 DOM.btnOpenSettings.addEventListener('click', openSettingsModal);
-DOM.btnToggleSafeMode.addEventListener('click', async () => {
+bindAsync(DOM.btnToggleSafeMode, 'click', async () => {
   const enabled = !Boolean(state.snapshot?.safety?.safe_mode_enabled);
   const response = await api('/api/system/safe-mode', {
     method: 'POST',
     body: JSON.stringify({ enabled })
   });
   applySafetyState(response.safety);
-});
-DOM.btnArmLive.addEventListener('click', async () => {
+}, 'Safety Error');
+bindAsync(DOM.btnArmLive, 'click', async () => {
   const response = await api('/api/system/arm-controls', {
     method: 'POST',
     body: JSON.stringify({ seconds: 12 })
   });
   applySafetyState(response.safety);
-});
-DOM.btnRunUpdate.addEventListener('click', async () => {
+}, 'Safety Error');
+bindAsync(DOM.btnRunUpdate, 'click', async () => {
   const updateStatus = state.updateStatus;
   let updateMessage = 'DeckPilot will pull the latest version and restart automatically if needed. Continue?';
   if (updateStatus?.restart_target === 'raspberry_pi') {
@@ -1004,22 +1207,22 @@ DOM.btnRunUpdate.addEventListener('click', async () => {
   } catch (error) {
     await showNotice('Update Error', error.message || 'Automatic update failed to start.');
   }
-});
-DOM.configFormat.addEventListener('change', async (e) => {
+}, 'Update Error');
+bindAsync(DOM.configFormat, 'change', async (e) => {
   if (!await ensureLiveActionAllowed('Video format change')) {
     DOM.configFormat.value = state.snapshot?.transport?.video_format || DOM.configFormat.value;
     return;
   }
   await api('/api/system/video-format', { method: 'POST', body: JSON.stringify({ video_format: e.target.value }) });
-});
-DOM.configOutput.addEventListener('change', async (e) => {
+}, 'Display Error');
+bindAsync(DOM.configOutput, 'change', async (e) => {
   if (!await ensureLiveActionAllowed('Video output change')) {
     renderOutputs(state.snapshot?.outputs || []);
     return;
   }
   await api('/api/system/output', { method: 'POST', body: JSON.stringify({ output_id: e.target.value }) });
-});
-DOM.configCanvas.addEventListener('change', async (e) => {
+}, 'Display Error');
+bindAsync(DOM.configCanvas, 'change', async (e) => {
   if (!await ensureLiveActionAllowed('Video canvas change')) {
     renderDisplaySettings(state.snapshot?.display || {});
     return;
@@ -1029,14 +1232,14 @@ DOM.configCanvas.addEventListener('change', async (e) => {
     state.snapshot.display = response.display;
     renderDisplaySettings(state.snapshot.display);
   }
+}, 'Display Error');
+DOM.configVolume.addEventListener('input', (e) => {
+  scheduleVolumeCommit(Number(e.target.value));
 });
-DOM.configVolume.addEventListener('input', async (e) => {
-  await api('/api/audio/volume', { method: 'POST', body: JSON.stringify({ volume: Number(e.target.value) }) });
-});
-DOM.btnMute.addEventListener('click', async () => {
+bindAsync(DOM.btnMute, 'click', async () => {
   const muted = DOM.btnMute.classList.contains('muted');
   await api('/api/audio/mute', { method: 'POST', body: JSON.stringify({ muted: !muted }) });
-});
+}, 'Audio Error');
 DOM.folderFilter.addEventListener('change', () => {
   renderMediaToolbar();
   renderMediaGrid(filteredClips(), state.snapshot.transport.clip_id, state.snapshot.transport.status);
@@ -1051,7 +1254,7 @@ DOM.btnToggleMediaView.addEventListener('click', () => {
   renderMediaToolbar();
   renderMediaGrid(filteredClips(), state.snapshot.transport.clip_id, state.snapshot.transport.status);
 });
-DOM.btnNewFolder.addEventListener('click', async () => {
+bindAsync(DOM.btnNewFolder, 'click', async () => {
   const name = await requestText({
     title: 'New Folder',
     message: 'Nom du dossier media :',
@@ -1062,8 +1265,8 @@ DOM.btnNewFolder.addEventListener('click', async () => {
   await refresh();
   DOM.folderFilter.value = name;
   renderMediaGrid(filteredClips(), state.snapshot.transport.clip_id, state.snapshot.transport.status);
-});
-DOM.btnMoveFolder.addEventListener('click', async () => {
+}, 'Media Error');
+bindAsync(DOM.btnMoveFolder, 'click', async () => {
   const clip = getSelectedClip();
   if (!clip) {
     await showNotice('Move Clip', 'Selectionne un clip avant de changer son dossier.');
@@ -1082,7 +1285,7 @@ DOM.btnMoveFolder.addEventListener('click', async () => {
   await refresh();
   DOM.folderFilter.value = targetFolder;
   renderMediaGrid(filteredClips(), state.snapshot.transport.clip_id, state.snapshot.transport.status);
-});
+}, 'Media Error');
 DOM.previewModal.addEventListener('click', (event) => {
   if (event.target === DOM.previewModal) {
     closePreviewModal();
@@ -1095,19 +1298,19 @@ DOM.settingsModal.addEventListener('click', (event) => {
 });
 DOM.btnPreviewClose.addEventListener('click', closePreviewModal);
 DOM.btnSettingsClose.addEventListener('click', closeSettingsModal);
-DOM.btnPreviewPlay.addEventListener('click', async () => {
+bindAsync(DOM.btnPreviewPlay, 'click', async () => {
   const clip = getSelectedClip();
   if (!clip) return;
   await api(`/api/clips/${clip.deck_id}/play`, { method: 'POST' });
   closePreviewModal();
-});
-DOM.btnPreviewCue.addEventListener('click', async () => {
+}, 'Preview Error');
+bindAsync(DOM.btnPreviewCue, 'click', async () => {
   const clip = getSelectedClip();
   if (!clip) return;
   await cueClip(clip.deck_id);
-});
-DOM.btnPreviewAddPlaylist.addEventListener('click', async () => addSelectedClipToPlaylist());
-DOM.btnNewPlaylist.addEventListener('click', async () => {
+}, 'Preview Error');
+bindAsync(DOM.btnPreviewAddPlaylist, 'click', async () => addSelectedClipToPlaylist(), 'Playlist Error');
+bindAsync(DOM.btnNewPlaylist, 'click', async () => {
   const name = await requestText({
     title: 'New Playlist',
     message: 'Nom de la playlist :',
@@ -1119,33 +1322,33 @@ DOM.btnNewPlaylist.addEventListener('click', async () => {
     body: JSON.stringify({ name, clip_ids: [], activate: false })
   });
   await refresh();
-});
-DOM.btnActivatePlaylist.addEventListener('click', async () => {
+}, 'Playlist Error');
+bindAsync(DOM.btnActivatePlaylist, 'click', async () => {
   const playlistId = currentPlaylistId();
   if (!playlistId) return;
   await api(`/api/playlists/${playlistId}/activate`, { method: 'POST' });
   await refresh();
-});
-DOM.btnPlayPlaylist.addEventListener('click', async () => {
+}, 'Playlist Error');
+bindAsync(DOM.btnPlayPlaylist, 'click', async () => {
   await playPlaylist();
-});
-DOM.btnPlayPlaylistFrom.addEventListener('click', async () => {
+}, 'Playlist Error');
+bindAsync(DOM.btnPlayPlaylistFrom, 'click', async () => {
   await playPlaylistFromSelection();
-});
-DOM.btnNextPlaylist.addEventListener('click', async () => {
+}, 'Playlist Error');
+bindAsync(DOM.btnNextPlaylist, 'click', async () => {
   await playNextPlaylistSelection();
-});
-DOM.btnLoopPlaylist.addEventListener('click', async () => {
+}, 'Playlist Error');
+bindAsync(DOM.btnLoopPlaylist, 'click', async () => {
   const enabled = !Boolean(state.snapshot?.transport?.playlist_loop);
   await api('/api/playlists/loop', {
     method: 'POST',
     body: JSON.stringify({ enabled })
   });
-});
-DOM.btnAddSelectedPlaylist.addEventListener('click', async () => addSelectedClipToPlaylist());
-DOM.btnClearPlaylist.addEventListener('click', async () => {
+}, 'Playlist Error');
+bindAsync(DOM.btnAddSelectedPlaylist, 'click', async () => addSelectedClipToPlaylist(), 'Playlist Error');
+bindAsync(DOM.btnClearPlaylist, 'click', async () => {
   await clearCurrentPlaylist();
-});
+}, 'Playlist Error');
 DOM.appDialogBackdrop.addEventListener('click', (event) => {
   if (event.target === DOM.appDialogBackdrop) {
     closeAppDialog(null);
@@ -1166,48 +1369,128 @@ async function addSelectedClipToPlaylist() {
   await refresh();
 }
 
-async function refresh() {
-  const [snapshot, folderPayload, playlistPayload, updatePayload] = await Promise.all([
-    api('/api/state'),
-    api('/api/media/folders'),
-    api('/api/playlists'),
-    api('/api/system/update')
-  ]);
-  state.folders = folderPayload.folders || [];
-  state.playlists = playlistPayload.playlists || [];
-  snapshot.playlist = playlistPayload.active || snapshot.playlist;
-  renderState(snapshot);
-  renderUpdateStatus(updatePayload);
-  if (['running', 'restarting'].includes(updatePayload.phase)) {
-    startUpdatePolling();
+async function refresh({ includeUpdate = true } = {}) {
+  const requests = [api('/api/state')];
+  if (includeUpdate) {
+    requests.push(api('/api/system/update'));
   }
+  const [snapshot, updatePayload] = await Promise.all(requests);
+  renderState(snapshot);
+  if (updatePayload) {
+    renderUpdateStatus(updatePayload);
+    if (['running', 'restarting', 'rebooting'].includes(updatePayload.phase)) {
+      startUpdatePolling();
+    }
+  }
+}
+
+function scheduleWebSocketReconnect() {
+  if (state.websocketReconnectTimer) return;
+  state.websocketReconnectTimer = window.setTimeout(() => {
+    state.websocketReconnectTimer = null;
+    setupWebSocket();
+  }, 2000);
 }
 
 function setupWebSocket() {
   const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
   const socket = new WebSocket(`${protocol}://${location.host}/ws`);
   socket.addEventListener('message', (event) => {
-    const message = JSON.parse(event.data);
+    let message;
+    try {
+      message = JSON.parse(event.data);
+    } catch (error) {
+      console.error('Invalid websocket payload', error);
+      return;
+    }
     if (message.type === 'snapshot') {
       renderState(message.payload);
       return;
     }
     if (!state.snapshot) return;
-    if (message.type === 'transport') state.snapshot.transport = message.payload;
-    if (message.type === 'clips') state.snapshot.clips = message.payload.clips;
-    if (message.type === 'connections') state.snapshot.connections = message.payload;
-    if (message.type === 'audio') state.snapshot.audio = message.payload;
-    if (message.type === 'playlist') state.snapshot.playlist = message.payload;
-    if (message.type === 'outputs') state.snapshot.outputs = message.payload.outputs;
-    if (message.type === 'health') state.snapshot.health = message.payload;
-    if (message.type === 'display') state.snapshot.display = message.payload;
-    if (message.type === 'safety') state.snapshot.safety = message.payload;
+    if (message.type === 'transport') {
+      const previousTransport = state.snapshot.transport;
+      state.snapshot.transport = message.payload;
+      normalizeSelection();
+      renderTransport(state.snapshot.transport, state.snapshot.clips);
+      if (transportAffectsCollections(previousTransport, state.snapshot.transport)) {
+        syncPlaybackCollections();
+      }
+      return;
+    }
+    if (message.type === 'clips') {
+      state.snapshot.clips = message.payload.clips;
+      reindexClips(state.snapshot.clips);
+      normalizeSelection();
+      renderTransport(state.snapshot.transport, state.snapshot.clips);
+      renderPlaybackCollections();
+      renderPreview();
+      return;
+    }
+    if (message.type === 'folders') {
+      state.folders = message.payload.folders || [];
+      renderCollections();
+      return;
+    }
+    if (message.type === 'playlists') {
+      state.playlists = message.payload.playlists || [];
+      renderPlaylists();
+      return;
+    }
+    if (message.type === 'connections') {
+      state.snapshot.connections = message.payload;
+      renderConnectionStatus(message.payload);
+      return;
+    }
+    if (message.type === 'audio') {
+      state.snapshot.audio = message.payload;
+      renderAudio(message.payload);
+      return;
+    }
+    if (message.type === 'playlist') {
+      state.snapshot.playlist = message.payload;
+      normalizeSelection();
+      renderPlaylists();
+      renderPlaybackCollections();
+      return;
+    }
+    if (message.type === 'outputs') {
+      state.snapshot.outputs = message.payload.outputs;
+      renderOutputs(state.snapshot.outputs);
+      return;
+    }
+    if (message.type === 'health') {
+      state.snapshot.health = message.payload;
+      renderHealth(message.payload, state.snapshot.safety);
+      return;
+    }
+    if (message.type === 'display') {
+      state.snapshot.display = message.payload;
+      renderDisplaySettings(message.payload);
+      return;
+    }
+    if (message.type === 'safety') {
+      applySafetyState(message.payload);
+      return;
+    }
     if (message.type === 'log') {
       state.snapshot.logs = [...(state.snapshot.logs || []), message.payload].slice(-200);
+      renderLogs(state.snapshot.logs);
+      return;
     }
-    renderState(state.snapshot);
   });
-  socket.addEventListener('close', () => setTimeout(setupWebSocket, 2000));
+  socket.addEventListener('close', scheduleWebSocketReconnect);
 }
 
-refresh().then(setupWebSocket);
+async function initializeApp() {
+  try {
+    await refresh();
+    setupWebSocket();
+  } catch (error) {
+    console.error(error);
+    await showNotice('Startup Error', getErrorMessage(error, 'DeckPilot failed to initialize.'));
+    scheduleWebSocketReconnect();
+  }
+}
+
+initializeApp();

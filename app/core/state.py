@@ -22,9 +22,10 @@ class AppState:
         self.logs = deque(maxlen=config.log_buffer_size)
         self._subscribers: set[asyncio.Queue] = set()
         self._lock = asyncio.Lock()
+        self._subscriber_queue_size = 64
 
     async def subscribe(self) -> asyncio.Queue:
-        queue: asyncio.Queue = asyncio.Queue()
+        queue: asyncio.Queue = asyncio.Queue(maxsize=self._subscriber_queue_size)
         self._subscribers.add(queue)
         return queue
 
@@ -32,8 +33,17 @@ class AppState:
         self._subscribers.discard(queue)
 
     async def publish(self, event_type: str, payload: Dict[str, Any]) -> None:
+        event = {"type": event_type, "payload": payload}
         for queue in list(self._subscribers):
-            await queue.put({"type": event_type, "payload": payload})
+            if queue.full():
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+            try:
+                queue.put_nowait(event)
+            except asyncio.QueueFull:
+                continue
 
     async def add_log(self, level: str, source: str, message: str) -> None:
         async with self._lock:

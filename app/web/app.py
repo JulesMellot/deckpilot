@@ -333,6 +333,8 @@ def build_app(
                 event = await queue.get()
                 await websocket.send_json(event)
         except WebSocketDisconnect:
+            pass
+        finally:
             await state.unsubscribe(queue)
 
     return app

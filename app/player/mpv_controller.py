@@ -109,24 +109,27 @@ class MPVController:
             return False
         if not await self._command_ok(['loadfile', path, 'replace']):
             return False
-        if not await self._command_ok(['set_property', 'loop-file', 'inf' if loop else 'no']):
+        if not await self.set_loop(loop):
             return False
         return await self._command_ok(['set_property', 'pause', False])
 
-    async def cue_file(self, path: str, is_vertical: bool = False) -> bool:
+    async def cue_file(self, path: str, loop: bool = False, is_vertical: bool = False) -> bool:
         if not await self._command_ok(['set_property', 'vf', '']):
             return False
         if not await self._command_ok(['set_property', 'pause', True]):
             return False
         if not await self._command_ok(['loadfile', path, 'replace']):
             return False
-        return await self._command_ok(['set_property', 'loop-file', 'no'])
+        return await self.set_loop(loop)
 
     async def stop(self) -> bool:
         return await self._command_ok(['stop'])
 
     async def pause(self, enabled: bool = True) -> bool:
         return await self._command_ok(['set_property', 'pause', enabled])
+
+    async def set_loop(self, enabled: bool) -> bool:
+        return await self._command_ok(['set_property', 'loop-file', 'inf' if enabled else 'no'])
 
     async def set_volume(self, value: int) -> bool:
         return await self._command_ok(['set_property', 'volume', value])

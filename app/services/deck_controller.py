@@ -70,8 +70,12 @@ class DeckController:
         await self.clip_store.sync_with_disk()
         await self.playlist_store.sync_active_playlist_from_clips()
         clips = await self.clip_store.list_clips()
+        folders = await self.clip_store.list_folders()
+        playlists = await self.playlist_store.list_playlists()
         self._last_clip_sync_at = time.time()
         await self.state.publish('clips', {'clips': [clip.to_dict() for clip in clips]})
+        await self.state.publish('folders', {'folders': folders})
+        await self.state.publish('playlists', {'playlists': playlists})
         await self.state.publish('playlist', await self.playlist_store.get_active_playlist())
         await self.state.publish('slot', await self.slot_snapshot())
         await self._publish_health()
@@ -88,7 +92,7 @@ class DeckController:
             await self._report_error('player', f'Player unavailable for cue: {self.player.last_error or "startup failed"}')
             await self._publish_health()
             return False
-        if not await self.player.cue_file(clip.filepath, is_vertical=clip.is_vertical):
+        if not await self.player.cue_file(clip.filepath, loop=clip.loop_enabled, is_vertical=clip.is_vertical):
             await self._report_error('player', f'Cue failed for "{clip.name}": {self.player.last_error or "unknown player error"}')
             await self._publish_health()
             return False
@@ -115,7 +119,11 @@ class DeckController:
         return True
 
     async def play(self, clip_id: int | None = None, loop: bool | None = None, single_clip: bool | None = None) -> bool:
-        target_clip_id = clip_id or self.current_clip_id or 1
+        target_clip_id = clip_id or self.current_clip_id
+        if not target_clip_id:
+            await self._report_error('playback', 'Cannot play: no clip is currently loaded.')
+            await self._publish_health()
+            return False
         clip = await self.clip_store.get_clip(target_clip_id)
         if not clip:
             await self._report_error('playback', f'Cannot play clip {target_clip_id}: clip not found.')
@@ -125,8 +133,46 @@ class DeckController:
             await self._report_error('playback', f'Cannot play clip "{clip.name}": missing file path.')
             await self._publish_health()
             return False
-        self.current_clip_id = clip.deck_id
         use_loop = clip.loop_enabled if loop is None else loop
+        was_cued_clip = self.current_clip_id == clip.deck_id and self.state.transport.clip_id == clip.deck_id
+        self.current_clip_id = clip.deck_id
+        if (
+            was_cued_clip
+            and self.state.transport.paused
+            and await self.player.is_available()
+        ):
+            resumed_at = time.monotonic()
+            if not await self.player.set_loop(use_loop):
+                await self._report_error('player', f'Loop update failed for "{clip.name}": {self.player.last_error or "unknown player error"}')
+                await self._publish_health()
+                return False
+            if not await self.player.pause(False):
+                await self._report_error('player', f'Resume failed for "{clip.name}": {self.player.last_error or "unknown player error"}')
+                await self._publish_health()
+                return False
+            self._play_started_at = resumed_at
+            if self._pause_started_at is not None:
+                self._accumulated_pause_seconds += resumed_at - self._pause_started_at
+            self._pause_started_at = None
+            await self.state.set_transport(
+                status='play',
+                speed=100,
+                clip_id=clip.deck_id,
+                loop=use_loop,
+                single_clip=bool(single_clip),
+                paused=False,
+                total_seconds=clip.duration_seconds,
+                remaining_seconds=self.state.transport.remaining_seconds or clip.duration_seconds,
+                elapsed_seconds=self.state.transport.elapsed_seconds,
+                video_format=self.state.transport.video_format,
+                playlist_mode=self._playlist_mode,
+                playlist_loop=self._playlist_loop,
+                playlist_position=await self._playlist_position_for_clip(clip.deck_id),
+            )
+            self._last_error = None
+            self._last_error_key = None
+            await self._publish_health()
+            return True
         started = await self._start_clip_playback(clip, use_loop)
         if not started:
             return False
@@ -176,7 +222,6 @@ class DeckController:
         if await self.player.is_available():
             if not await self.player.stop():
                 await self._report_error('player', f'Stop failed: {self.player.last_error or "unknown player error"}')
-            await self.player.stop_process()
         self._play_started_at = None
         self._pause_started_at = None
         self._accumulated_pause_seconds = 0.0
@@ -208,7 +253,10 @@ class DeckController:
     async def set_loop(self, deck_id: int, enabled: bool) -> None:
         updated = await self.clip_store.set_loop(deck_id, enabled)
         if updated and self.current_clip_id == deck_id:
+            if await self.player.is_available() and not await self.player.set_loop(enabled):
+                await self._report_error('player', f'Loop update failed: {self.player.last_error or "unknown player error"}')
             await self.state.set_transport(loop=enabled)
+            await self._publish_health()
         await self.refresh_clips()
 
     async def delete_clip(self, deck_id: int) -> None:
@@ -395,6 +443,8 @@ class DeckController:
         return {
             'transport': self.state.transport.to_dict(),
             'clips': [clip.to_dict() for clip in clips],
+            'folders': await self.clip_store.list_folders(),
+            'playlists': await self.playlist_store.list_playlists(),
             'preview_enabled': self.state.preview_enabled,
             'remote_enabled': self.state.remote_enabled,
             'connections': self.state.connection_snapshot(),

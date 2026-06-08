@@ -34,11 +34,12 @@ class MPVController:
         log_path.write_text('', encoding='utf-8')
 
         for profile_name, command in self._startup_profiles(log_path):
-            self.process = await asyncio.create_subprocess_exec(
+            process = await asyncio.create_subprocess_exec(
                 *command,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
             )
+            self.process = process
             for _ in range(48):
                 if socket_path.exists():
                     try:
@@ -48,7 +49,7 @@ class MPVController:
                     except (ConnectionError, FileNotFoundError, OSError):
                         await asyncio.sleep(0.25)
                         continue
-                if self.process.returncode is not None:
+                if process.returncode is not None:
                     break
                 await asyncio.sleep(0.25)
             await self.stop_process()
@@ -69,11 +70,13 @@ class MPVController:
         self.process = None
 
     async def is_available(self) -> bool:
+        process = self.process
+        writer = self._writer
         return (
-            self.process is not None
-            and self.process.returncode is None
-            and self._writer is not None
-            and not self._writer.is_closing()
+            process is not None
+            and process.returncode is None
+            and writer is not None
+            and not writer.is_closing()
         )
 
     async def command(self, command: list[Any]) -> dict[str, Any] | None:
@@ -102,13 +105,7 @@ class MPVController:
         return bool(response and response.get('error') == 'success')
 
     async def play_file(self, path: str, loop: bool = False, is_vertical: bool = False) -> bool:
-        lavfi = _build_video_filter(
-            self._current_video_format,
-            is_vertical,
-            output_width=self._output_width,
-            output_height=self._output_height,
-        )
-        if not await self._command_ok(['set_property', 'vf', lavfi]):
+        if not await self._command_ok(['set_property', 'vf', '']):
             return False
         # DeckPilot manages loop restarts itself to avoid losing audio on some Raspberry Pi/mpv setups.
         if not await self._command_ok(['set_property', 'loop-file', 'no']):
@@ -118,13 +115,7 @@ class MPVController:
         return await self._command_ok(['set_property', 'pause', False])
 
     async def cue_file(self, path: str, is_vertical: bool = False) -> bool:
-        lavfi = _build_video_filter(
-            self._current_video_format,
-            is_vertical,
-            output_width=self._output_width,
-            output_height=self._output_height,
-        )
-        if not await self._command_ok(['set_property', 'vf', lavfi]):
+        if not await self._command_ok(['set_property', 'vf', '']):
             return False
         if not await self._command_ok(['set_property', 'loop-file', 'no']):
             return False
@@ -232,44 +223,3 @@ class MPVController:
         if not lines:
             return ''
         return ' | '.join(lines[-line_count:])
-
-
-def _target_dimensions(video_format: str) -> tuple[int, int]:
-    presets = {
-        '1080p25': (1920, 1080),
-        '1080p30': (1920, 1080),
-        '1080p50': (1920, 1080),
-        '1080p60': (1920, 1080),
-    }
-    return presets.get(video_format, (1920, 1080))
-
-
-def _build_video_filter(
-    video_format: str,
-    is_vertical: bool,
-    *,
-    output_width: int | None = None,
-    output_height: int | None = None,
-) -> str:
-    width, height = _resolved_target_dimensions(video_format, output_width=output_width, output_height=output_height)
-    if is_vertical:
-        return (
-            f"lavfi=[split[main][bg];"
-            f"[bg]scale={width}:{height}:force_original_aspect_ratio=increase,"
-            f"crop={width}:{height},setsar=1,gblur=sigma=22[bg2];"
-            f"[main]scale={width}:{height}:force_original_aspect_ratio=decrease,"
-            f"setsar=1[fg];"
-            f"[bg2][fg]overlay=(W-w)/2:(H-h)/2,setsar=1]"
-        )
-    return f"lavfi=[scale={width}:{height},setsar=1]"
-
-
-def _resolved_target_dimensions(
-    video_format: str,
-    *,
-    output_width: int | None = None,
-    output_height: int | None = None,
-) -> tuple[int, int]:
-    if output_width and output_height and output_width > 0 and output_height > 0:
-        return output_width, output_height
-    return _target_dimensions(video_format)

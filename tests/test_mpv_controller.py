@@ -5,7 +5,7 @@ import unittest
 from types import SimpleNamespace
 
 from app.core.config import AppConfig
-from app.player.mpv_controller import MPVController, _build_video_filter, _resolved_target_dimensions
+from app.player.mpv_controller import MPVController
 
 
 class FakeWriter:
@@ -73,28 +73,6 @@ class MPVControllerCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(response)
         self.assertEqual(response['request_id'], 1)
         self.assertIsNone(self.controller.last_error)
-
-
-class MPVControllerFilterTests(unittest.TestCase):
-    def test_standard_filter_forces_fullscreen_16_9_without_padding(self) -> None:
-        vf = _build_video_filter('1080p25', is_vertical=False)
-
-        self.assertIn('scale=1920:1080', vf)
-        self.assertIn('setsar=1', vf)
-        self.assertNotIn('pad=1920:1080', vf)
-
-    def test_vertical_filter_builds_blurred_fill(self) -> None:
-        vf = _build_video_filter('1080p25', is_vertical=True)
-
-        self.assertIn('gblur=sigma=22', vf)
-        self.assertIn('overlay=(W-w)/2:(H-h)/2', vf)
-        self.assertIn('setsar=1', vf)
-
-    def test_output_geometry_override_takes_priority(self) -> None:
-        width, height = _resolved_target_dimensions('1080p25', output_width=2560, output_height=1440)
-
-        self.assertEqual((width, height), (2560, 1440))
-
 
 if __name__ == '__main__':
     unittest.main()

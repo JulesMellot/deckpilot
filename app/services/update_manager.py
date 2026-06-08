@@ -116,7 +116,30 @@ class UpdateManager:
         phase = str(saved.get('phase') or 'idle')
         runner_pid = saved.get('runner_pid')
         runner_active = self._pid_exists(int(runner_pid)) if runner_pid else False
-        if phase in {'running', 'restarting'} and not runner_active and saved.get('finished_at'):
+        saved_previous_commit = saved.get('previous_commit')
+        saved_current_commit = saved.get('current_commit')
+        saved_remote_commit = saved.get('remote_commit')
+
+        # On systemd installs the detached updater can be killed with the old service cgroup
+        # even though the new DeckPilot process is already running. Normalize that state here.
+        if phase == 'restarting' and not runner_active:
+            update_applied = bool(
+                current_commit
+                and (
+                    (saved_previous_commit and current_commit != saved_previous_commit)
+                    or (saved_current_commit and current_commit == saved_current_commit)
+                    or (saved_remote_commit and current_commit == saved_remote_commit)
+                )
+            )
+            if update_applied:
+                phase = 'success'
+                saved['phase'] = 'success'
+                saved['message'] = 'DeckPilot updated successfully.'
+                saved['finished_at'] = saved.get('finished_at') or time.time()
+                saved['error'] = None
+                saved['current_commit'] = current_commit
+                self._write_status_sync(saved)
+        elif phase in {'running', 'restarting'} and not runner_active and saved.get('finished_at'):
             phase = str(saved.get('phase'))
 
         reason = None

@@ -17,6 +17,7 @@ class MPVController:
         self.process: Process | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._reader: asyncio.StreamReader | None = None
+        self._command_lock = asyncio.Lock()
         self._request_id = 0
         self._selected_output_id: str | None = None
         self._current_video_format: str = config.default_video_format
@@ -73,23 +74,24 @@ class MPVController:
         if not await self.is_available():
             self.last_error = 'mpv is not available'
             return None
-        self._request_id += 1
-        payload = json.dumps({'command': command, 'request_id': self._request_id}).encode('utf-8') + b'\n'
-        assert self._writer is not None
-        try:
-            self._writer.write(payload)
-            await self._writer.drain()
-            assert self._reader is not None
-            response = await self._reader.readline()
-        except (ConnectionError, BrokenPipeError, json.JSONDecodeError, OSError) as exc:
-            self.last_error = str(exc)
-            return None
-        if not response:
-            self.last_error = 'mpv IPC returned an empty response'
-            return None
-        parsed = json.loads(response.decode('utf-8'))
-        self.last_error = None if parsed.get('error') == 'success' else str(parsed.get('error') or 'unknown mpv error')
-        return parsed
+        async with self._command_lock:
+            self._request_id += 1
+            payload = json.dumps({'command': command, 'request_id': self._request_id}).encode('utf-8') + b'\n'
+            assert self._writer is not None
+            try:
+                self._writer.write(payload)
+                await self._writer.drain()
+                assert self._reader is not None
+                response = await self._reader.readline()
+            except (ConnectionError, BrokenPipeError, json.JSONDecodeError, OSError, RuntimeError) as exc:
+                self.last_error = str(exc)
+                return None
+            if not response:
+                self.last_error = 'mpv IPC returned an empty response'
+                return None
+            parsed = json.loads(response.decode('utf-8'))
+            self.last_error = None if parsed.get('error') == 'success' else str(parsed.get('error') or 'unknown mpv error')
+            return parsed
 
     async def _command_ok(self, command: list[Any]) -> bool:
         response = await self.command(command)

@@ -68,6 +68,10 @@ def load_config() -> AppConfig:
     }
     raw = _merge_dict(raw, env_overrides)
 
+    if not raw.get("mpv_log_path"):
+        data_dir = raw.get("data_dir") or defaults.data_dir
+        raw["mpv_log_path"] = str(Path(data_dir) / "mpv.log")
+
     config = AppConfig(**raw)
     config.ensure_directories()
     return config

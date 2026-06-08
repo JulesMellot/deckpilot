@@ -1,36 +1,52 @@
-# Installation Raspberry Pi
+# Raspberry Pi Installation
 
-## Nom propose
+## Quick Bootstrap
 
-- Nom du projet: DeckPilot
-- Alternatives: HyperPi Deck, PiDeck Studio, OpenHyperPi
+For a guided install that detects the platform, installs missing dependencies, prepares Python, writes the local config, and can enable a service automatically:
 
-## OS recommande
+```bash
+curl -fsSL https://raw.githubusercontent.com/JulesMellot/deckpilot/main/scripts/bootstrap.sh | bash
+```
 
-- Raspberry Pi OS Lite 32 bits Bookworm pour un Pi 3B: empreinte memoire plus faible, meilleur confort sur 1 Go de RAM, aucun gain reel indispensable en 64 bits pour ce projet.
-- Raspberry Pi OS Lite 64 bits reste valable sur Pi 3B+ et Pi 4 si tu prevois des traitements video plus lourds, mais ce n'est pas le meilleur compromis par defaut pour un 3B.
+If the repository is already cloned locally:
 
-## Dependances systeme
+```bash
+./scripts/bootstrap.sh
+```
+
+## Project Name
+
+- Project name: DeckPilot
+- Alternative names: HyperPi Deck, PiDeck Studio, OpenHyperPi
+
+## Recommended OS
+
+- Raspberry Pi OS Lite 32-bit Bookworm is the recommended default for a Pi 3B. It keeps the memory footprint lower, is more comfortable on 1 GB of RAM, and does not lose anything essential for this project.
+- Raspberry Pi OS Lite 64-bit is still valid on Pi 3B+ and Pi 4 if you expect heavier video workloads, but it is not the best default trade-off for a Pi 3B.
+
+## System Dependencies
 
 ```bash
 sudo apt update
 sudo apt install -y python3 python3-venv python3-pip ffmpeg mpv sqlite3 netcat-openbsd
 ```
 
-## Installation du projet
+## Project Installation
 
 ```bash
-git clone <ton-repo> /home/pi/pideck
+git clone <your-repo> /home/pi/pideck
 cd /home/pi/pideck
 chmod +x scripts/install.sh
 ./scripts/install.sh
 ```
 
-## Configuration HDMI
+The `scripts/install.sh` script is now a Raspberry Pi wrapper that runs the shared bootstrap installer with `/home/pi/pideck` as the target directory and enables a `systemd` service.
 
-Suivant l'OS, le fichier peut etre `/boot/config.txt` ou `/boot/firmware/config.txt`.
+## HDMI Configuration
 
-Exemple minimal pour forcer la sortie HDMI:
+Depending on the OS image, the file is usually either `/boot/config.txt` or `/boot/firmware/config.txt`.
+
+Minimal example to force HDMI output:
 
 ```ini
 hdmi_force_hotplug=1
@@ -39,7 +55,7 @@ hdmi_mode=33
 config_hdmi_boost=7
 ```
 
-Table utile pour 1080p:
+Useful values for 1080p:
 
 - 1080p24 -> `hdmi_group=1`, `hdmi_mode=32`
 - 1080p25 -> `hdmi_group=1`, `hdmi_mode=33`
@@ -47,39 +63,39 @@ Table utile pour 1080p:
 - 1080p50 -> `hdmi_group=1`, `hdmi_mode=31`
 - 1080p60 -> `hdmi_group=1`, `hdmi_mode=16`
 
-L'ATEM ne scale pas les sources HDMI comme un scaler de production classique: le format du Pi doit matcher celui du projet ATEM.
+ATEM does not scale HDMI sources like a traditional production scaler. The Raspberry Pi output format must match the ATEM project video standard.
 
 ## Service systemd
 
 ```bash
-sudo systemctl status pideck-open.service
-sudo journalctl -u pideck-open.service -f
+sudo systemctl status deckpilot.service
+sudo journalctl -u deckpilot.service -f
 ```
 
-## Acces web
+## Web Access
 
-- Trouver l'IP: `hostname -I`
-- Interface: `http://IP_DU_PI:8080`
-- HyperDeck TCP: `IP_DU_PI:9993`
+- Find the IP address: `hostname -I`
+- Web interface: `http://PI_IP:8080`
+- HyperDeck TCP endpoint: `PI_IP:9993`
 
-## Connexion ATEM
+## ATEM Connection
 
-- Brancher la sortie HDMI du Pi sur une entree HDMI de l'ATEM.
-- Mettre le Pi et l'ATEM sur le meme reseau Ethernet.
-- Dans ATEM Software Control, ouvrir la section HyperDeck.
-- Ajouter un HyperDeck en indiquant l'IP du Pi et le port `9993`.
-- Activer `Auto Roll` si tu veux que les medias partent automatiquement lors des macros/transitions.
+- Connect the Raspberry Pi HDMI output to an HDMI input on the ATEM.
+- Put the Raspberry Pi and the ATEM on the same Ethernet network.
+- In ATEM Software Control, open the HyperDeck section.
+- Add a HyperDeck using the Raspberry Pi IP address and port `9993`.
+- Enable `Auto Roll` if you want clips to start automatically during macros or transitions.
 
-## Companion et tests
+## Companion And Tests
 
-- Bitfocus Companion peut se connecter au port `9993` comme a un HyperDeck.
-- Test manuel netcat:
+- Bitfocus Companion can connect to port `9993` as if it were a standard HyperDeck.
+- Manual netcat test:
 
 ```bash
-nc IP_DU_PI 9993
+nc PI_IP 9993
 ```
 
-Puis envoyer:
+Then send:
 
 ```text
 device info
@@ -89,31 +105,31 @@ play
 stop
 ```
 
-- Test client Python:
+- Python test client:
 
 ```bash
-python3 scripts/hyperdeck_test_client.py IP_DU_PI 9993
+python3 scripts/hyperdeck_test_client.py PI_IP 9993
 ```
 
-## Splash screen boot
+## Boot Splash Screen
 
-Option simple et robuste:
+Simple and robust approach:
 
-- Ajouter un service systemd annexe qui lance un petit script Python en framebuffer ou en X pour afficher `hostname -I` au boot.
-- Variante plus simple: activer `agetty --autologin` sur la console locale et afficher automatiquement l'IP dans `/etc/profile`.
+- Add a secondary `systemd` service that launches a small Python script in framebuffer or X to display `hostname -I` at boot.
+- Simpler alternative: enable `agetty --autologin` on the local console and print the IP automatically from `/etc/profile`.
 
-## Performance Pi 3B
+## Pi 3B Performance
 
-- Preferer H.264 High/Main en `yuv420p`.
-- Eviter les debits trop eleves et les GOP trop courts.
-- Cible pratique: 1080p25/30, audio AAC, fichiers `.mp4`.
-- Pour 1080p50/60, rester prudent sur le bitrate et tester sur le materiel final.
-- Eviter les codecs intermediaires lourds type ProRes sur Pi 3B.
+- Prefer H.264 High/Main in `yuv420p`.
+- Avoid very high bitrates and very short GOP structures.
+- Practical target: 1080p25 or 1080p30, AAC audio, `.mp4` files.
+- For 1080p50 or 1080p60, be conservative with bitrate and test on final hardware.
+- Avoid heavy intermediate codecs such as ProRes on a Pi 3B.
 
-## Depannage
+## Troubleshooting
 
-- Pas de sortie HDMI: verifier `hdmi_force_hotplug=1`, le bon `hdmi_mode`, puis redemarrer.
-- L'ATEM ne voit pas le deck: verifier que le port `9993` ecoute avec `ss -ltnp | grep 9993`.
-- L'interface web ne s'ouvre pas: verifier `sudo systemctl status pideck-open.service`.
-- Pas de lecture video: tester `mpv --fs /chemin/vers/clip.mp4` directement sur le Pi.
-- Mauvais format sur l'ATEM: aligner strictement le mode HDMI du Pi avec le standard video du projet ATEM.
+- No HDMI output: verify `hdmi_force_hotplug=1`, check the correct `hdmi_mode`, then reboot.
+- ATEM cannot see the deck: verify that port `9993` is listening with `ss -ltnp | grep 9993`.
+- Web UI does not open: check `sudo systemctl status deckpilot.service`.
+- No video playback: test `mpv --fs /path/to/clip.mp4` directly on the Raspberry Pi.
+- Wrong format on ATEM: make sure the Raspberry Pi HDMI mode strictly matches the ATEM project video standard.

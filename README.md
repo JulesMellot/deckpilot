@@ -41,6 +41,38 @@ DeckPilot provides:
 - `ffmpeg` / `ffprobe`
 - HTML / CSS / JavaScript (vanilla)
 
+## One-Command Install
+
+DeckPilot now ships with bootstrap installers that detect the host platform, install missing dependencies, clone or update the repository, create the Python environment, generate `config.json`, and optionally install a system service on Linux.
+
+### Linux / macOS
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/JulesMellot/deckpilot/main/scripts/bootstrap.sh | bash
+```
+
+### Windows PowerShell
+
+```powershell
+irm https://raw.githubusercontent.com/JulesMellot/deckpilot/main/scripts/bootstrap.ps1 | iex
+```
+
+### What The Bootstrap Does
+
+- detects the operating system
+- installs missing system dependencies
+- clones or updates DeckPilot
+- creates `.venv`
+- installs Python requirements
+- writes a local `config.json`
+- optionally installs and enables a `systemd` service on Linux
+
+### Platform Notes
+
+- Linux: supported
+- macOS: supported for local setup and development
+- Windows: bootstrap is available, but runtime support is still experimental because the current `mpv` IPC layer is not fully adapted yet
+
 ## Project Structure
 
 - `app/core/` - configuration, models, and shared state
@@ -64,6 +96,12 @@ python3 -m app.main
 ```
 
 The web UI is then available at [http://127.0.0.1:8080](http://127.0.0.1:8080).
+
+If you already cloned the repository and want the guided installer instead of doing setup manually:
+
+```bash
+./scripts/bootstrap.sh
+```
 
 ## Quick Protocol Test
 
@@ -96,6 +134,7 @@ It is already usable for testing and real-world validation, but it should still 
 - improve browser preview and media browsing
 - add clearer health/status indicators for player, output, and storage
 - improve documentation and setup guides
+- strengthen the cross-platform installer and first-run experience
 
 ### Mid Term
 
@@ -104,6 +143,7 @@ It is already usable for testing and real-world validation, but it should still 
 - safer operational controls for live use
 - expanded automated test coverage for protocol and services
 - packaging and release workflow improvements
+- improve Windows runtime support for `mpv` IPC and playback
 
 ### Long Term
 
@@ -123,6 +163,8 @@ These are not committed yet, but they are strong candidates for future versions:
 - richer ATEM debugging tools
 - improved multi-display and fullscreen output control
 - better production-ready monitoring and fault reporting
+- native installer packages for desktop platforms
+- a more complete first-run setup wizard
 
 ## Contributing
 

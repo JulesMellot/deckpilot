@@ -227,7 +227,11 @@ def build_app(
     async def goto_clip(deck_id: int) -> dict[str, Any]:
         ok_flag = await controller.goto_clip(deck_id)
         if not ok_flag:
-            raise HTTPException(status_code=404, detail='Clip not found')
+            clip = await clip_store.get_clip(deck_id)
+            if not clip:
+                raise HTTPException(status_code=404, detail='Clip not found')
+            detail = controller.player.last_error or controller._last_error or 'Cue unavailable'
+            raise HTTPException(status_code=503, detail=detail)
         return {'ok': True}
 
     @app.post('/api/clips/{deck_id}/play')

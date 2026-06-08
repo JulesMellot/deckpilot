@@ -284,6 +284,11 @@ class DeckController:
 
     async def select_output(self, output_id: str) -> None:
         await self.output_manager.set_selected_output(output_id)
+        selected_output = await self.output_manager.get_selected_output()
+        await self.player.set_output_geometry(
+            selected_output.width if selected_output else None,
+            selected_output.height if selected_output else None,
+        )
         await self.player.set_output(output_id)
         await self.state.publish('outputs', {'outputs': await self.list_outputs()})
         await self._publish_health()

@@ -38,6 +38,7 @@ def create_application() -> tuple[AppConfig, object]:
         await output_manager.initialize()
         selected_output = await output_manager.get_selected_output()
         if selected_output:
+            await player.set_output_geometry(selected_output.width, selected_output.height)
             await player.set_output(selected_output.id)
         preload_player = bool(os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY'))
         if preload_player:

@@ -48,6 +48,7 @@ class OutputManager:
         return self._detect_linux_drm_outputs()
 
     def _detect_linux_xrandr_outputs(self) -> List[VideoOutput]:
+        active_monitors = self._detect_linux_xrandr_active_monitors()
         try:
             result = subprocess.run(['xrandr', '--query'], capture_output=True, text=True, check=False)
         except FileNotFoundError:
@@ -60,19 +61,46 @@ class OutputManager:
             parts = line.split()
             physical_name = parts[0]
             primary = 'primary' in parts
-            width = height = None
-            for token in parts:
-                if 'x' in token and '+' in token:
-                    resolution = token.split('+', 1)[0]
-                    if 'x' in resolution:
-                        w, h = resolution.split('x', 1)
-                        width = int(w)
-                        height = int(h)
-                        break
+            width, height = active_monitors.get(physical_name, (None, None))
+            if width is None or height is None:
+                for token in parts:
+                    if 'x' in token and '+' in token:
+                        resolution = token.split('+', 1)[0]
+                        if 'x' in resolution:
+                            w, h = resolution.split('x', 1)
+                            width = int(w)
+                            height = int(h)
+                            break
             label = physical_name if width is None else f'{physical_name} ({width}x{height})'
             outputs.append(VideoOutput(id=str(logical_index), label=label, width=width, height=height, primary=primary))
             logical_index += 1
         return outputs
+
+    def _detect_linux_xrandr_active_monitors(self) -> dict[str, tuple[int | None, int | None]]:
+        try:
+            result = subprocess.run(['xrandr', '--listactivemonitors'], capture_output=True, text=True, check=False)
+        except FileNotFoundError:
+            return {}
+        monitors: dict[str, tuple[int | None, int | None]] = {}
+        for line in result.stdout.splitlines():
+            if ':' not in line or '+' not in line or '/' not in line:
+                continue
+            parts = line.split()
+            if len(parts) < 4:
+                continue
+            geometry = parts[2]
+            name = parts[3]
+            size = geometry.split('+', 1)[0]
+            if 'x' not in size:
+                continue
+            width_text, height_text = size.split('x', 1)
+            try:
+                width = int(width_text.split('/', 1)[0])
+                height = int(height_text.split('/', 1)[0])
+            except ValueError:
+                continue
+            monitors[name] = (width, height)
+        return monitors
 
     def _detect_linux_drm_outputs(self) -> List[VideoOutput]:
         outputs: list[VideoOutput] = []
@@ -91,31 +119,38 @@ class OutputManager:
             if '-' not in connector_key:
                 continue
             card_name, connector_name = connector_key.split('-', 1)
+            active_mode_file = connector_dir / 'mode'
             mode_file = connector_dir / 'modes'
             width = height = None
             refresh_hz = None
             label = connector_name
-            if mode_file.exists():
+            mode_value = ''
+            if active_mode_file.exists():
                 try:
-                    first_mode = next((line.strip() for line in mode_file.read_text(encoding='utf-8').splitlines() if line.strip()), '')
+                    mode_value = active_mode_file.read_text(encoding='utf-8').strip()
                 except OSError:
-                    first_mode = ''
-                if first_mode and 'x' in first_mode:
-                    mode_part = first_mode
-                    if '@' in mode_part:
-                        resolution, hz = mode_part.split('@', 1)
-                        try:
-                            refresh_hz = float(hz)
-                        except ValueError:
-                            refresh_hz = None
-                    else:
-                        resolution = mode_part
+                    mode_value = ''
+            if not mode_value and mode_file.exists():
+                try:
+                    mode_value = next((line.strip() for line in mode_file.read_text(encoding='utf-8').splitlines() if line.strip()), '')
+                except OSError:
+                    mode_value = ''
+            if mode_value and 'x' in mode_value:
+                mode_part = mode_value
+                if '@' in mode_part:
+                    resolution, hz = mode_part.split('@', 1)
                     try:
-                        w, h = resolution.split('x', 1)
-                        width = int(w)
-                        height = int(h)
+                        refresh_hz = float(hz)
                     except ValueError:
-                        width = height = None
+                        refresh_hz = None
+                else:
+                    resolution = mode_part
+                try:
+                    w, h = resolution.split('x', 1)
+                    width = int(w)
+                    height = int(h)
+                except ValueError:
+                    width = height = None
             if width and height:
                 label = f'{connector_name} ({width}x{height})'
 

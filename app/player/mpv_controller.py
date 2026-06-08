@@ -21,6 +21,8 @@ class MPVController:
         self._request_id = 0
         self._selected_output_id: str | None = None
         self._current_video_format: str = config.default_video_format
+        self._output_width: int | None = None
+        self._output_height: int | None = None
         self.last_error: str | None = None
 
     async def start(self) -> None:
@@ -100,7 +102,12 @@ class MPVController:
         return bool(response and response.get('error') == 'success')
 
     async def play_file(self, path: str, loop: bool = False, is_vertical: bool = False) -> bool:
-        lavfi = _build_video_filter(self._current_video_format, is_vertical)
+        lavfi = _build_video_filter(
+            self._current_video_format,
+            is_vertical,
+            output_width=self._output_width,
+            output_height=self._output_height,
+        )
         if not await self._command_ok(['set_property', 'vf', lavfi]):
             return False
         if not await self._command_ok(['set_property', 'loop-file', 'inf' if loop else 'no']):
@@ -110,18 +117,19 @@ class MPVController:
         return await self._command_ok(['set_property', 'pause', False])
 
     async def cue_file(self, path: str, is_vertical: bool = False) -> bool:
-        lavfi = _build_video_filter(self._current_video_format, is_vertical)
+        lavfi = _build_video_filter(
+            self._current_video_format,
+            is_vertical,
+            output_width=self._output_width,
+            output_height=self._output_height,
+        )
         if not await self._command_ok(['set_property', 'vf', lavfi]):
             return False
         if not await self._command_ok(['set_property', 'loop-file', 'no']):
             return False
         if not await self._command_ok(['set_property', 'pause', True]):
             return False
-        if not await self._command_ok(['loadfile', path, 'replace']):
-            return False
-        if not await self._command_ok(['seek', 0, 'absolute+exact']):
-            return False
-        return await self._command_ok(['set_property', 'pause', True])
+        return await self._command_ok(['loadfile', path, 'replace'])
 
     async def stop(self) -> bool:
         return await self._command_ok(['stop'])
@@ -145,6 +153,10 @@ class MPVController:
 
     async def set_video_format(self, video_format: str) -> None:
         self._current_video_format = video_format
+
+    async def set_output_geometry(self, width: int | None, height: int | None) -> None:
+        self._output_width = width if width and width > 0 else None
+        self._output_height = height if height and height > 0 else None
 
     async def _read_response(self, request_id: int) -> dict[str, Any] | None:
         assert self._reader is not None
@@ -231,8 +243,14 @@ def _target_dimensions(video_format: str) -> tuple[int, int]:
     return presets.get(video_format, (1920, 1080))
 
 
-def _build_video_filter(video_format: str, is_vertical: bool) -> str:
-    width, height = _target_dimensions(video_format)
+def _build_video_filter(
+    video_format: str,
+    is_vertical: bool,
+    *,
+    output_width: int | None = None,
+    output_height: int | None = None,
+) -> str:
+    width, height = _resolved_target_dimensions(video_format, output_width=output_width, output_height=output_height)
     if is_vertical:
         return (
             f"lavfi=[split[main][bg];"
@@ -243,3 +261,14 @@ def _build_video_filter(video_format: str, is_vertical: bool) -> str:
             f"[bg2][fg]overlay=(W-w)/2:(H-h)/2,setsar=1]"
         )
     return f"lavfi=[scale={width}:{height},setsar=1]"
+
+
+def _resolved_target_dimensions(
+    video_format: str,
+    *,
+    output_width: int | None = None,
+    output_height: int | None = None,
+) -> tuple[int, int]:
+    if output_width and output_height and output_width > 0 and output_height > 0:
+        return output_width, output_height
+    return _target_dimensions(video_format)

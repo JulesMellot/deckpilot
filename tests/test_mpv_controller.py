@@ -76,12 +76,12 @@ class MPVControllerCommandTests(unittest.IsolatedAsyncioTestCase):
 
 
 class MPVControllerFilterTests(unittest.TestCase):
-    def test_standard_filter_forces_16_9_canvas(self) -> None:
+    def test_standard_filter_forces_fullscreen_16_9_without_padding(self) -> None:
         vf = _build_video_filter('1080p25', is_vertical=False)
 
-        self.assertIn('scale=1920:1080:force_original_aspect_ratio=decrease', vf)
-        self.assertIn('pad=1920:1080', vf)
+        self.assertIn('scale=1920:1080', vf)
         self.assertIn('setsar=1', vf)
+        self.assertNotIn('pad=1920:1080', vf)
 
     def test_vertical_filter_builds_blurred_fill(self) -> None:
         vf = _build_video_filter('1080p25', is_vertical=True)

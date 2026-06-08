@@ -109,6 +109,20 @@ class MPVController:
             return False
         return await self._command_ok(['set_property', 'pause', False])
 
+    async def cue_file(self, path: str, is_vertical: bool = False) -> bool:
+        lavfi = _build_video_filter(self._current_video_format, is_vertical)
+        if not await self._command_ok(['set_property', 'vf', lavfi]):
+            return False
+        if not await self._command_ok(['set_property', 'loop-file', 'no']):
+            return False
+        if not await self._command_ok(['set_property', 'pause', True]):
+            return False
+        if not await self._command_ok(['loadfile', path, 'replace']):
+            return False
+        if not await self._command_ok(['seek', 0, 'absolute+exact']):
+            return False
+        return await self._command_ok(['set_property', 'pause', True])
+
     async def stop(self) -> bool:
         return await self._command_ok(['stop'])
 
@@ -228,7 +242,4 @@ def _build_video_filter(video_format: str, is_vertical: bool) -> str:
             f"setsar=1[fg];"
             f"[bg2][fg]overlay=(W-w)/2:(H-h)/2,setsar=1]"
         )
-    return (
-        f"lavfi=[scale={width}:{height}:force_original_aspect_ratio=decrease,"
-        f"setsar=1,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black,setsar=1]"
-    )
+    return f"lavfi=[scale={width}:{height},setsar=1]"

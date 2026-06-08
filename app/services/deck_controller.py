@@ -79,8 +79,25 @@ class DeckController:
         clip = await self.clip_store.get_clip(clip_id)
         if not clip:
             return False
+        if not clip.filepath:
+            await self._report_error('playback', f'Cannot cue clip "{clip.name}": missing file path.')
+            await self._publish_health()
+            return False
+        if not await self._ensure_player_ready():
+            await self._report_error('player', f'Player unavailable for cue: {self.player.last_error or "startup failed"}')
+            await self._publish_health()
+            return False
+        if not await self.player.cue_file(clip.filepath, is_vertical=clip.is_vertical):
+            await self._report_error('player', f'Cue failed for "{clip.name}": {self.player.last_error or "unknown player error"}')
+            await self._publish_health()
+            return False
         self.current_clip_id = clip.deck_id
+        self._play_started_at = time.monotonic()
+        self._pause_started_at = self._play_started_at
+        self._accumulated_pause_seconds = 0.0
         await self.state.set_transport(
+            status='stopped',
+            speed=0,
             clip_id=clip.deck_id,
             timecode='00:00:00:00',
             display_timecode='00:00:00:00',
@@ -89,7 +106,11 @@ class DeckController:
             elapsed_seconds=0.0,
             video_format=self.state.transport.video_format,
             loop=clip.loop_enabled,
+            paused=True,
         )
+        self._last_error = None
+        self._last_error_key = None
+        await self._publish_health()
         return True
 
     async def play(self, clip_id: int | None = None, loop: bool | None = None, single_clip: bool | None = None) -> bool:

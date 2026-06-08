@@ -100,20 +100,9 @@ class MPVController:
         return bool(response and response.get('error') == 'success')
 
     async def play_file(self, path: str, loop: bool = False, is_vertical: bool = False) -> bool:
-        width, height = _target_dimensions(self._current_video_format)
-        if is_vertical:
-            lavfi = (
-                f"lavfi=[split[main][bg];"
-                f"[bg]scale={width}:{height}:force_original_aspect_ratio=increase,"
-                f"crop={width}:{height},gblur=sigma=22[bg2];"
-                f"[main]scale={width}:{height}:force_original_aspect_ratio=decrease[fg];"
-                f"[bg2][fg]overlay=(W-w)/2:(H-h)/2]"
-            )
-            if not await self._command_ok(['set_property', 'vf', lavfi]):
-                return False
-        else:
-            if not await self._command_ok(['set_property', 'vf', '']):
-                return False
+        lavfi = _build_video_filter(self._current_video_format, is_vertical)
+        if not await self._command_ok(['set_property', 'vf', lavfi]):
+            return False
         if not await self._command_ok(['set_property', 'loop-file', 'inf' if loop else 'no']):
             return False
         if not await self._command_ok(['loadfile', path, 'replace']):
@@ -226,3 +215,20 @@ def _target_dimensions(video_format: str) -> tuple[int, int]:
         '1080p60': (1920, 1080),
     }
     return presets.get(video_format, (1920, 1080))
+
+
+def _build_video_filter(video_format: str, is_vertical: bool) -> str:
+    width, height = _target_dimensions(video_format)
+    if is_vertical:
+        return (
+            f"lavfi=[split[main][bg];"
+            f"[bg]scale={width}:{height}:force_original_aspect_ratio=increase,"
+            f"crop={width}:{height},setsar=1,gblur=sigma=22[bg2];"
+            f"[main]scale={width}:{height}:force_original_aspect_ratio=decrease,"
+            f"setsar=1[fg];"
+            f"[bg2][fg]overlay=(W-w)/2:(H-h)/2,setsar=1]"
+        )
+    return (
+        f"lavfi=[scale={width}:{height}:force_original_aspect_ratio=decrease,"
+        f"setsar=1,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black,setsar=1]"
+    )

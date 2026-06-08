@@ -194,6 +194,11 @@ function getSelectedClip() {
   return state.snapshot?.clips?.find((clip) => clip.deck_id === state.selectedClipId) || null;
 }
 
+async function cueClip(clipId) {
+  if (!clipId) return;
+  await api(`/api/clips/${clipId}/goto`, { method: 'POST' });
+}
+
 function currentPlaylistId() {
   return Number(DOM.playlistSelect.value || state.snapshot?.playlist?.playlist?.id || 0);
 }
@@ -738,8 +743,9 @@ function renderMediaGrid(clips, activeClipId, status) {
     if (clip.deck_id === state.selectedClipId) {
       node.style.boxShadow = 'inset 0 0 0 2px var(--color-accent)';
     }
-    node.addEventListener('click', () => {
+    node.addEventListener('click', async () => {
       state.selectedClipId = clip.deck_id;
+      await cueClip(clip.deck_id);
       renderMediaGrid(filteredClips(), state.snapshot.transport.clip_id, state.snapshot.transport.status);
       renderPreview();
     });
@@ -1046,7 +1052,7 @@ DOM.btnPreviewPlay.addEventListener('click', async () => {
 DOM.btnPreviewCue.addEventListener('click', async () => {
   const clip = getSelectedClip();
   if (!clip) return;
-  await api(`/api/clips/${clip.deck_id}/goto`, { method: 'POST' });
+  await cueClip(clip.deck_id);
 });
 DOM.btnPreviewAddPlaylist.addEventListener('click', async () => addSelectedClipToPlaylist());
 DOM.btnNewPlaylist.addEventListener('click', async () => {

@@ -1,55 +1,60 @@
 # DeckPilot
 
-DeckPilot est un emulateur open source de Blackmagic HyperDeck pense pour un usage ATEM, Companion et playout local.
+DeckPilot is an open-source HyperDeck-style playout system built for ATEM, Companion, and lightweight live playback workflows.
 
-Le projet fournit :
+It is designed to behave like a network-controlled video deck while providing a modern web interface for clip management, playlists, preview, and playback control.
 
-- un serveur TCP HyperDeck compatible ATEM/Companion sur le port `9993`
-- une interface web de gestion media, playlists et playback
-- un moteur de lecture `mpv` avec sortie plein ecran sur l'ecran choisi
-- un stockage SQLite pour les clips, playlists et metadonnees
-- un workflow leger, sans build step frontend
+## What It Does
 
-## Fonctionnalites
+DeckPilot provides:
 
-- compatibilite HyperDeck de base pour ATEM et Bitfocus Companion
-- upload web de clips video
-- lecture, stop, pause, cue et cut to black
-- playlists persistantes avec lecture et boucle
-- dossiers medias avec navigation par dossiers
-- preview navigateur par clip
-- thumbnails automatiques
-- selection de sortie video
-- choix du format video
-- controle audio, mute et volume
-- affichage de la cible reseau HyperDeck a renseigner dans l'ATEM
-- detection des videos verticales avec fill flou cote playout
-- logs HyperDeck consultables dans l'interface
+- a HyperDeck-compatible TCP server on port `9993`
+- a FastAPI web interface for media management and playback
+- `mpv`-based fullscreen output on the selected display
+- SQLite storage for clips, playlists, folders, and metadata
+- a lightweight frontend with no build step
 
-## Stack
+## Current Features
+
+- HyperDeck protocol support for ATEM and Bitfocus Companion
+- web upload for video clips
+- play, stop, pause, cue, and cut-to-black controls
+- persistent playlists with playback and loop mode
+- media folders with folder-based navigation
+- browser preview per clip
+- automatic thumbnail generation
+- selectable video output
+- selectable video format
+- audio volume and mute control
+- visible HyperDeck network target for ATEM setup
+- vertical video detection with blurred background fill on playout
+- real-time HyperDeck logs in the UI
+- media grid and list views
+
+## Technology Stack
 
 - Python 3.9+
 - FastAPI + Uvicorn
-- asyncio TCP pour le protocole HyperDeck
+- asyncio TCP server for the HyperDeck protocol
 - SQLite
-- `mpv` via IPC JSON
+- `mpv` via JSON IPC
 - `ffmpeg` / `ffprobe`
-- HTML / CSS / JavaScript vanilla
+- HTML / CSS / JavaScript (vanilla)
 
-## Structure Du Projet
+## Project Structure
 
-- `app/core/` : configuration, modeles et etat global
-- `app/hyperdeck/` : protocole texte HyperDeck et serveur multi-clients
-- `app/media/` : clips, playlists, dossiers, ffprobe, thumbnails
-- `app/player/` : pilotage `mpv` via socket IPC
-- `app/services/` : orchestration playback, reseau, sorties video
-- `app/web/` : API FastAPI et WebSocket temps reel
-- `app/static/` : interface web vanilla
-- `scripts/` : outils de test et installation
-- `deploy/` : service `systemd`
-- `docs/` : documentation d'installation
+- `app/core/` - configuration, models, and shared state
+- `app/hyperdeck/` - HyperDeck protocol parsing and multi-client server
+- `app/media/` - clips, playlists, folders, metadata, thumbnails
+- `app/player/` - `mpv` control layer
+- `app/services/` - playback orchestration, networking, outputs
+- `app/web/` - FastAPI routes and WebSocket layer
+- `app/static/` - frontend assets
+- `scripts/` - install and test helpers
+- `deploy/` - `systemd` service files
+- `docs/` - installation documentation
 
-## Lancement Local
+## Local Run
 
 ```bash
 python3 -m venv .venv
@@ -58,22 +63,69 @@ pip install -r requirements.txt
 python3 -m app.main
 ```
 
-L'interface web est ensuite disponible sur `http://127.0.0.1:8080`.
+The web UI is then available at [http://127.0.0.1:8080](http://127.0.0.1:8080).
 
-## Test Rapide Du Protocole
+## Quick Protocol Test
 
 ```bash
 python3 scripts/hyperdeck_test_client.py 127.0.0.1 9993
 ```
 
-## Usage ATEM
+## ATEM Usage
 
-- brancher la sortie video de DeckPilot sur une entree HDMI de l'ATEM
-- ajouter DeckPilot dans l'onglet HyperDeck d'ATEM Software Control
-- renseigner l'adresse affichee dans l'interface web
-- activer le workflow HyperDeck / Auto Roll selon le setup voulu
+1. Connect DeckPilot video output to an HDMI input on your ATEM.
+2. Add DeckPilot in the HyperDeck tab of ATEM Software Control.
+3. Use the HyperDeck target shown in the DeckPilot web UI.
+4. Enable the workflow you want, including Auto Roll if needed.
 
-## Statut
+When properly configured, ATEM can control DeckPilot over the network like a standard HyperDeck-style deck.
 
-Le projet est utilisable, mais reste en phase alpha / early beta.
-Il est recommande de le tester avec le materiel reel avant usage live.
+## Status
+
+DeckPilot is currently in alpha / early beta.
+
+It is already usable for testing and real-world validation, but it should still be treated as a work in progress until it has gone through broader hardware and production testing.
+
+## Roadmap
+
+### Near Term
+
+- improve ATEM real-world validation and protocol coverage
+- refine playback reliability and error handling
+- polish playlist workflow and operator UX
+- improve browser preview and media browsing
+- add clearer health/status indicators for player, output, and storage
+- improve documentation and setup guides
+
+### Mid Term
+
+- stronger cross-platform output handling
+- better logging and operator diagnostics
+- safer operational controls for live use
+- expanded automated test coverage for protocol and services
+- packaging and release workflow improvements
+
+### Long Term
+
+- advanced playlist and rundown workflow
+- richer operator views and status dashboards
+- tighter live production ergonomics
+- better deployment options for SBC and desktop systems
+
+## Future Features
+
+These are not committed yet, but they are strong candidates for future versions:
+
+- playlist duplication and easier playlist reordering
+- optional clip tags and smarter media search
+- more advanced transport diagnostics
+- configurable operator profiles or locked-down UI modes
+- richer ATEM debugging tools
+- improved multi-display and fullscreen output control
+- better production-ready monitoring and fault reporting
+
+## Contributing
+
+Contributions, testing feedback, and real ATEM validation reports are welcome.
+
+If you are testing DeckPilot with live hardware, protocol traces and setup notes are especially useful.

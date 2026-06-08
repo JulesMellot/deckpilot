@@ -13,6 +13,7 @@ from app.player.mpv_controller import MPVController
 from app.services.deck_controller import DeckController
 from app.services.network_info import NetworkInfoService
 from app.services.output_manager import OutputManager
+from app.services.update_manager import UpdateManager
 from app.web.app import build_app
 
 
@@ -24,9 +25,10 @@ def create_application() -> tuple[AppConfig, object]:
     player = MPVController(config)
     output_manager = OutputManager()
     network_info = NetworkInfoService(config.http_port, config.hyperdeck_port)
+    update_manager = UpdateManager(config, state)
     controller = DeckController(config, state, clip_store, playlist_store, output_manager, network_info, player)
     server = HyperDeckServer(config, state, controller)
-    app = build_app(controller, state, clip_store, playlist_store)
+    app = build_app(controller, state, clip_store, playlist_store, update_manager)
 
     @app.on_event('startup')
     async def _startup() -> None:

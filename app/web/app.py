@@ -13,6 +13,7 @@ from app.core.state import AppState
 from app.media.clip_store import ClipStore
 from app.media.playlist_store import PlaylistStore
 from app.services.deck_controller import DeckController
+from app.services.update_manager import UpdateManager
 
 
 class RenameRequest(BaseModel):
@@ -65,7 +66,17 @@ class PlaylistPlayRequest(BaseModel):
     loop: bool = False
 
 
-def build_app(controller: DeckController, state: AppState, clip_store: ClipStore, playlist_store: PlaylistStore) -> FastAPI:
+class UpdateTriggerRequest(BaseModel):
+    confirm: bool = True
+
+
+def build_app(
+    controller: DeckController,
+    state: AppState,
+    clip_store: ClipStore,
+    playlist_store: PlaylistStore,
+    update_manager: UpdateManager,
+) -> FastAPI:
     app = FastAPI(title='DeckPilot')
     app.add_middleware(
         CORSMiddleware,
@@ -142,6 +153,19 @@ def build_app(controller: DeckController, state: AppState, clip_store: ClipStore
     @app.get('/api/system/outputs')
     async def get_outputs() -> dict[str, Any]:
         return {'outputs': await controller.list_outputs()}
+
+    @app.get('/api/system/update')
+    async def get_update_status() -> dict[str, Any]:
+        return await update_manager.get_status()
+
+    @app.post('/api/system/update')
+    async def run_update(payload: UpdateTriggerRequest) -> dict[str, Any]:
+        if not payload.confirm:
+            raise HTTPException(status_code=400, detail='Update confirmation is required')
+        try:
+            return await update_manager.trigger_update()
+        except RuntimeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post('/api/upload')
     async def upload(files: list[UploadFile] = File(...)) -> dict[str, Any]:

@@ -7,6 +7,8 @@ const state = {
   dialogResolver: null,
   logsVisible: true,
   mediaView: 'grid',
+  updateStatus: null,
+  updatePollTimer: null,
 };
 
 const DOM = {
@@ -75,6 +77,8 @@ const DOM = {
   btnAppDialogConfirm: document.getElementById('btn-app-dialog-confirm'),
   settingsModal: document.getElementById('settings-modal'),
   btnSettingsClose: document.getElementById('btn-settings-close'),
+  updateMeta: document.getElementById('update-meta'),
+  btnRunUpdate: document.getElementById('btn-run-update'),
 };
 
 const Templates = {
@@ -88,6 +92,11 @@ function formatClock(seconds) {
   const mins = Math.floor((total % 3600) / 60).toString().padStart(2, '0');
   const secs = (total % 60).toString().padStart(2, '0');
   return `${hrs}:${mins}:${secs}`;
+}
+
+function formatDateTime(timestampSeconds) {
+  if (!timestampSeconds) return 'n/a';
+  return new Date(timestampSeconds * 1000).toLocaleString('en-GB', { hour12: false });
 }
 
 async function api(path, options = {}) {
@@ -307,6 +316,62 @@ function closeSettingsModal() {
 
 function openSettingsModal() {
   DOM.settingsModal.hidden = false;
+}
+
+function renderUpdateStatus(update) {
+  state.updateStatus = update || null;
+  if (!update) {
+    DOM.updateMeta.textContent = 'Update status unavailable.';
+    DOM.btnRunUpdate.disabled = true;
+    DOM.btnRunUpdate.textContent = 'UPDATE NOW';
+    DOM.btnRunUpdate.classList.remove('active');
+    return;
+  }
+
+  const lines = [
+    `Platform: ${(update.platform || 'unknown').toUpperCase()} | Mode: ${(update.install_mode || 'manual').toUpperCase()}`,
+    `Branch: ${update.branch || 'unknown'} | Local: ${update.current_commit || 'n/a'} | Remote: ${update.remote_commit || 'n/a'}`,
+    `Status: ${(update.phase || 'idle').toUpperCase()} | ${update.message || 'Ready'}`,
+  ];
+  if (update.finished_at) {
+    lines.push(`Last run: ${formatDateTime(update.finished_at)}`);
+  }
+  if (update.error) {
+    lines.push(`Error: ${update.error}`);
+  }
+  if (!update.can_update && update.reason) {
+    lines.push(`Info: ${update.reason}`);
+  }
+  DOM.updateMeta.textContent = lines.join('\n');
+
+  const busy = ['running', 'restarting'].includes(update.phase);
+  DOM.btnRunUpdate.disabled = busy || !update.can_update;
+  DOM.btnRunUpdate.textContent = busy ? 'UPDATING...' : 'UPDATE NOW';
+  DOM.btnRunUpdate.classList.toggle('active', Boolean(update.update_available) && !busy && update.can_update);
+}
+
+function stopUpdatePolling() {
+  if (!state.updatePollTimer) return;
+  clearInterval(state.updatePollTimer);
+  state.updatePollTimer = null;
+}
+
+function startUpdatePolling() {
+  if (state.updatePollTimer) return;
+  const poll = async () => {
+    try {
+      const update = await api('/api/system/update');
+      renderUpdateStatus(update);
+      if (!['running', 'restarting'].includes(update.phase)) {
+        stopUpdatePolling();
+        await refresh();
+      }
+    } catch (error) {
+      DOM.updateMeta.textContent = 'Updating DeckPilot...\nWaiting for the server to restart...';
+    }
+  };
+  state.updatePollTimer = setInterval(poll, 2000);
+  poll();
 }
 
 function setLogsVisible(enabled) {
@@ -698,6 +763,24 @@ DOM.btnBlack.addEventListener('click', async () => api('/api/system/black', { me
 DOM.btnRefreshMedia.addEventListener('click', refresh);
 DOM.btnToggleLogs.addEventListener('click', () => setLogsVisible(!state.logsVisible));
 DOM.btnOpenSettings.addEventListener('click', openSettingsModal);
+DOM.btnRunUpdate.addEventListener('click', async () => {
+  const confirmed = await requestConfirm({
+    title: 'Update DeckPilot',
+    message: 'DeckPilot will pull the latest version and restart automatically if needed. Continue?',
+    confirmLabel: 'UPDATE'
+  });
+  if (!confirmed) return;
+  try {
+    const update = await api('/api/system/update', {
+      method: 'POST',
+      body: JSON.stringify({ confirm: true })
+    });
+    renderUpdateStatus(update);
+    startUpdatePolling();
+  } catch (error) {
+    await showNotice('Update Error', error.message || 'Automatic update failed to start.');
+  }
+});
 DOM.configFormat.addEventListener('change', async (e) => {
   await api('/api/system/video-format', { method: 'POST', body: JSON.stringify({ video_format: e.target.value }) });
 });
@@ -832,15 +915,20 @@ async function addSelectedClipToPlaylist() {
 }
 
 async function refresh() {
-  const [snapshot, folderPayload, playlistPayload] = await Promise.all([
+  const [snapshot, folderPayload, playlistPayload, updatePayload] = await Promise.all([
     api('/api/state'),
     api('/api/media/folders'),
-    api('/api/playlists')
+    api('/api/playlists'),
+    api('/api/system/update')
   ]);
   state.folders = folderPayload.folders || [];
   state.playlists = playlistPayload.playlists || [];
   snapshot.playlist = playlistPayload.active || snapshot.playlist;
   renderState(snapshot);
+  renderUpdateStatus(updatePayload);
+  if (['running', 'restarting'].includes(updatePayload.phase)) {
+    startUpdatePolling();
+  }
 }
 
 function setupWebSocket() {

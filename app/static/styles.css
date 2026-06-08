@@ -516,6 +516,21 @@ header { grid-area: header; }
   gap: 1rem;
 }
 
+.settings-update-row {
+  grid-column: 1 / -1;
+}
+
+.settings-update-meta {
+  min-height: 4.5rem;
+  padding: 0.8rem 0.9rem;
+  border: 1px solid var(--border-dim);
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--text-dim);
+  font-size: 0.82rem;
+  line-height: 1.45;
+  white-space: pre-line;
+}
+
 .upload-overlay {
   position: absolute;
   inset: 0;

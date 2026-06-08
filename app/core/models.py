@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict
 
@@ -87,6 +87,8 @@ class VideoOutput:
     width: int | None = None
     height: int | None = None
     refresh_hz: float | None = None
+    current_mode: str | None = None
+    modes: list[str] = field(default_factory=list)
     primary: bool = False
     selected: bool = False
 

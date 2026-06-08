@@ -68,6 +68,7 @@ const DOM = {
   btnMute: document.getElementById('btn-mute'),
   configFormat: document.getElementById('config-format'),
   configOutput: document.getElementById('config-output'),
+  configCanvas: document.getElementById('config-canvas'),
   healthPlayer: document.getElementById('health-player'),
   healthOutput: document.getElementById('health-output'),
   healthStorage: document.getElementById('health-storage'),
@@ -407,7 +408,9 @@ function renderHealth(health, safety) {
     return;
   }
   DOM.healthPlayer.textContent = health.player_available ? 'ONLINE' : 'OFFLINE';
-  DOM.healthOutput.textContent = health.selected_output?.label || 'DEFAULT';
+  DOM.healthOutput.textContent = health.effective_output_width && health.effective_output_height
+    ? `${health.effective_output_width}x${health.effective_output_height}`
+    : (health.selected_output?.current_mode || health.selected_output?.label || 'DEFAULT');
   DOM.healthStorage.textContent = formatBytes(health.storage_free_bytes);
   DOM.healthRemote.textContent = health.remote_enabled ? 'ENABLED' : 'DISABLED';
 
@@ -415,6 +418,13 @@ function renderHealth(health, safety) {
     `Clips: ${health.clip_count || 0} | Controllers: ${health.connected_controllers || 0}`,
     `Safe mode: ${effectiveSafety.safe_mode_enabled ? 'ON' : 'OFF'} | Armed: ${effectiveSafety.live_controls_armed ? `${effectiveSafety.armed_seconds_remaining || 0}s` : 'NO'}`,
   ];
+  if (health.selected_output?.current_mode || health.effective_output_width) {
+    const detected = health.selected_output?.current_mode || 'unknown';
+    const canvas = health.effective_output_width && health.effective_output_height
+      ? `${health.effective_output_width}x${health.effective_output_height}`
+      : 'auto';
+    lines.push(`Display: detected ${detected} | canvas ${canvas} | mode ${(health.output_canvas_mode || 'auto').toUpperCase()}`);
+  }
   if (health.clips_last_synced_at) {
     lines.push(`Clip sync: ${formatDateTime(health.clips_last_synced_at)}`);
   }
@@ -535,7 +545,7 @@ async function clearCurrentPlaylist() {
 
 function renderState(snapshot) {
   state.snapshot = snapshot;
-  const { transport, clips, connections, logs, audio, outputs, playlist, network, health, safety } = snapshot;
+  const { transport, clips, connections, logs, audio, outputs, playlist, network, health, safety, display } = snapshot;
   if (!state.selectedClipId && clips.length) {
     state.selectedClipId = clips[0].deck_id;
   }
@@ -582,6 +592,7 @@ function renderState(snapshot) {
   }
 
   renderOutputs(outputs || []);
+  renderDisplaySettings(display || {});
   renderFolders();
   renderMediaToolbar();
   renderPlaylists();
@@ -610,6 +621,24 @@ function renderOutputs(outputs) {
   });
   if (previous && outputs.some((output) => output.id === previous)) {
     DOM.configOutput.value = previous;
+  }
+}
+
+function renderDisplaySettings(display) {
+  const previous = DOM.configCanvas.value;
+  const modes = display.available_canvas_modes || ['auto'];
+  DOM.configCanvas.innerHTML = '';
+  modes.forEach((mode) => {
+    const option = document.createElement('option');
+    option.value = mode;
+    option.textContent = mode === 'auto' ? 'AUTO (DETECTION)' : mode;
+    option.selected = mode === (display.canvas_mode || 'auto');
+    DOM.configCanvas.appendChild(option);
+  });
+  if (previous && modes.includes(previous)) {
+    DOM.configCanvas.value = previous;
+  } else {
+    DOM.configCanvas.value = display.canvas_mode || 'auto';
   }
 }
 
@@ -978,6 +1007,17 @@ DOM.configOutput.addEventListener('change', async (e) => {
   }
   await api('/api/system/output', { method: 'POST', body: JSON.stringify({ output_id: e.target.value }) });
 });
+DOM.configCanvas.addEventListener('change', async (e) => {
+  if (!await ensureLiveActionAllowed('Video canvas change')) {
+    renderDisplaySettings(state.snapshot?.display || {});
+    return;
+  }
+  const response = await api('/api/system/output-canvas', { method: 'POST', body: JSON.stringify({ mode: e.target.value }) });
+  if (state.snapshot && response?.display) {
+    state.snapshot.display = response.display;
+    renderDisplaySettings(state.snapshot.display);
+  }
+});
 DOM.configVolume.addEventListener('input', async (e) => {
   await api('/api/audio/volume', { method: 'POST', body: JSON.stringify({ volume: Number(e.target.value) }) });
 });
@@ -1148,6 +1188,7 @@ function setupWebSocket() {
     if (message.type === 'playlist') state.snapshot.playlist = message.payload;
     if (message.type === 'outputs') state.snapshot.outputs = message.payload.outputs;
     if (message.type === 'health') state.snapshot.health = message.payload;
+    if (message.type === 'display') state.snapshot.display = message.payload;
     if (message.type === 'safety') state.snapshot.safety = message.payload;
     if (message.type === 'log') {
       state.snapshot.logs = [...(state.snapshot.logs || []), message.payload].slice(-200);

@@ -72,7 +72,11 @@ class OutputManager:
                             height = int(h)
                             break
             label = physical_name if width is None else f'{physical_name} ({width}x{height})'
+            current_mode = f'{width}x{height}' if width and height else None
             outputs.append(VideoOutput(id=str(logical_index), label=label, width=width, height=height, primary=primary))
+            outputs[-1].current_mode = current_mode
+            if current_mode:
+                outputs[-1].modes = [current_mode]
             logical_index += 1
         return outputs
 
@@ -123,6 +127,8 @@ class OutputManager:
             mode_file = connector_dir / 'modes'
             width = height = None
             refresh_hz = None
+            current_mode = None
+            available_modes: list[str] = []
             label = connector_name
             mode_value = ''
             if active_mode_file.exists():
@@ -130,6 +136,11 @@ class OutputManager:
                     mode_value = active_mode_file.read_text(encoding='utf-8').strip()
                 except OSError:
                     mode_value = ''
+            if mode_file.exists():
+                try:
+                    available_modes = [line.strip() for line in mode_file.read_text(encoding='utf-8').splitlines() if line.strip()]
+                except OSError:
+                    available_modes = []
             if not mode_value and mode_file.exists():
                 try:
                     mode_value = next((line.strip() for line in mode_file.read_text(encoding='utf-8').splitlines() if line.strip()), '')
@@ -137,6 +148,7 @@ class OutputManager:
                     mode_value = ''
             if mode_value and 'x' in mode_value:
                 mode_part = mode_value
+                current_mode = mode_value
                 if '@' in mode_part:
                     resolution, hz = mode_part.split('@', 1)
                     try:
@@ -161,6 +173,8 @@ class OutputManager:
                     width=width,
                     height=height,
                     refresh_hz=refresh_hz,
+                    current_mode=current_mode,
+                    modes=available_modes,
                     primary=not primary_assigned,
                 )
             )

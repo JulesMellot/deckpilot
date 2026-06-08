@@ -41,6 +41,7 @@ class DeckController:
         self._health_task: asyncio.Task | None = None
         self._volume: int = 100
         self._muted: bool = False
+        self._output_canvas_mode: str = 'auto'
         self._playlist_mode = False
         self._playlist_loop = False
         self._last_clip_sync_at: float | None = None
@@ -285,13 +286,32 @@ class DeckController:
     async def select_output(self, output_id: str) -> None:
         await self.output_manager.set_selected_output(output_id)
         selected_output = await self.output_manager.get_selected_output()
-        await self.player.set_output_geometry(
-            selected_output.width if selected_output else None,
-            selected_output.height if selected_output else None,
-        )
+        await self._apply_output_geometry(selected_output)
         await self.player.set_output(output_id)
         await self.state.publish('outputs', {'outputs': await self.list_outputs()})
+        await self.state.publish('display', await self.display_snapshot())
         await self._publish_health()
+
+    async def set_output_canvas_mode(self, mode: str) -> None:
+        self._output_canvas_mode = mode or 'auto'
+        selected_output = await self.output_manager.get_selected_output()
+        await self._apply_output_geometry(selected_output)
+        await self.state.publish('display', await self.display_snapshot())
+        await self._publish_health()
+
+    async def display_snapshot(self) -> Dict[str, Any]:
+        selected_output = await self.output_manager.get_selected_output()
+        modes = self._available_canvas_modes(selected_output)
+        effective_width, effective_height = self._canvas_dimensions(selected_output)
+        return {
+            'canvas_mode': self._output_canvas_mode,
+            'available_canvas_modes': modes,
+            'selected_output_id': selected_output.id if selected_output else None,
+            'selected_output_label': selected_output.label if selected_output else None,
+            'detected_output_mode': selected_output.current_mode if selected_output else None,
+            'effective_width': effective_width,
+            'effective_height': effective_height,
+        }
 
     async def playlist_snapshot(self) -> Dict[str, Any]:
         return await self.playlist_store.get_active_playlist()
@@ -327,6 +347,7 @@ class DeckController:
         clips = await self.clip_store.list_clips()
         outputs = await self.output_manager.list_outputs()
         selected_output = next((item for item in outputs if item.selected), None)
+        effective_width, effective_height = self._canvas_dimensions(selected_output)
         free_bytes = 0
         total_bytes = 0
         try:
@@ -343,6 +364,9 @@ class DeckController:
             'clip_count': len(clips),
             'current_clip_exists': bool(self.current_clip_id and await self.clip_store.get_clip(self.current_clip_id)),
             'selected_output': selected_output.to_dict() if selected_output else None,
+            'output_canvas_mode': self._output_canvas_mode,
+            'effective_output_width': effective_width,
+            'effective_output_height': effective_height,
             'connected_controllers': len(self.state.connected_controllers),
             'remote_enabled': self.state.remote_enabled,
             'preview_enabled': self.state.preview_enabled,
@@ -364,6 +388,7 @@ class DeckController:
             'logs': self.state.logs_snapshot(),
             'audio': self.audio_snapshot(),
             'outputs': await self.list_outputs(),
+            'display': await self.display_snapshot(),
             'playlist': await self.playlist_snapshot(),
             'network': await self.network_info.snapshot(),
             'health': await self.health_snapshot(),
@@ -422,6 +447,30 @@ class DeckController:
 
     async def _publish_health(self) -> None:
         await self.state.publish('health', await self.health_snapshot())
+
+    async def _apply_output_geometry(self, selected_output) -> None:
+        width, height = self._canvas_dimensions(selected_output)
+        await self.player.set_output_geometry(width, height)
+
+    def _canvas_dimensions(self, selected_output) -> tuple[int | None, int | None]:
+        if self._output_canvas_mode != 'auto':
+            return _parse_canvas_mode(self._output_canvas_mode)
+        if selected_output:
+            return selected_output.width, selected_output.height
+        return None, None
+
+    def _available_canvas_modes(self, selected_output) -> list[str]:
+        values: list[str] = ['auto']
+        if selected_output:
+            for mode in selected_output.modes:
+                if mode not in values:
+                    values.append(mode)
+            if selected_output.current_mode and selected_output.current_mode not in values:
+                values.append(selected_output.current_mode)
+        for common in ('1920x1080', '2560x1440', '1280x720'):
+            if common not in values:
+                values.append(common)
+        return values
 
     async def _start_clip_playback(self, clip, use_loop: bool) -> bool:
         if not await self._ensure_player_ready():
@@ -483,3 +532,15 @@ class DeckController:
             return
         self._last_error_key = error_key
         await self.state.add_log('error', source, message)
+
+
+def _parse_canvas_mode(mode: str) -> tuple[int | None, int | None]:
+    try:
+        width_text, height_text = mode.lower().split('x', 1)
+        width = int(width_text)
+        height = int(height_text)
+    except (ValueError, AttributeError):
+        return None, None
+    if width <= 0 or height <= 0:
+        return None, None
+    return width, height

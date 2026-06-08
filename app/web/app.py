@@ -44,6 +44,10 @@ class OutputSelectionRequest(BaseModel):
     output_id: str
 
 
+class OutputCanvasRequest(BaseModel):
+    mode: str
+
+
 class FolderRequest(BaseModel):
     folder: str
 
@@ -290,6 +294,11 @@ def build_app(
     async def set_output(payload: OutputSelectionRequest) -> dict[str, Any]:
         await controller.select_output(payload.output_id)
         return {'ok': True}
+
+    @app.post('/api/system/output-canvas')
+    async def set_output_canvas(payload: OutputCanvasRequest) -> dict[str, Any]:
+        await controller.set_output_canvas_mode(payload.mode)
+        return {'ok': True, 'display': await controller.display_snapshot()}
 
     @app.post('/api/system/black')
     async def cut_black() -> dict[str, Any]:

@@ -5,7 +5,7 @@ import unittest
 from types import SimpleNamespace
 
 from app.core.config import AppConfig
-from app.player.mpv_controller import MPVController, _build_video_filter
+from app.player.mpv_controller import MPVController, _build_video_filter, _resolved_target_dimensions
 
 
 class FakeWriter:
@@ -89,6 +89,11 @@ class MPVControllerFilterTests(unittest.TestCase):
         self.assertIn('gblur=sigma=22', vf)
         self.assertIn('overlay=(W-w)/2:(H-h)/2', vf)
         self.assertIn('setsar=1', vf)
+
+    def test_output_geometry_override_takes_priority(self) -> None:
+        width, height = _resolved_target_dimensions('1080p25', output_width=2560, output_height=1440)
+
+        self.assertEqual((width, height), (2560, 1440))
 
 
 if __name__ == '__main__':

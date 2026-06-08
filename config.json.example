@@ -1,0 +1,22 @@
+{
+  "app_name": "DeckPilot",
+  "protocol_model": "Blackmagic HyperDeck Studio Mini",
+  "protocol_version": "1.11",
+  "http_host": "0.0.0.0",
+  "http_port": 8080,
+  "hyperdeck_host": "0.0.0.0",
+  "hyperdeck_port": 9993,
+  "clips_dir": "/home/pi/pideck/clips",
+  "data_dir": "/home/pi/pideck/data",
+  "db_path": "/home/pi/pideck/data/pideck.db",
+  "thumbnails_dir": "/home/pi/pideck/data/thumbnails",
+  "mpv_socket_path": "/tmp/pideck-mpv.sock",
+  "mpv_binary": "mpv",
+  "ffmpeg_binary": "ffmpeg",
+  "ffprobe_binary": "ffprobe",
+  "default_video_format": "1080p25",
+  "default_framerate": 25.0,
+  "ws_tick_seconds": 1.0,
+  "log_buffer_size": 200,
+  "allowed_upload_extensions": [".mp4", ".mov", ".mkv"]
+}

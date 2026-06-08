@@ -225,6 +225,16 @@ class DeckController:
 
     async def set_preview_enabled(self, enabled: bool) -> None:
         await self.state.set_preview_enabled(enabled)
+        if enabled:
+            return
+        if self.state.transport.status != 'play' or self.state.transport.paused:
+            return
+        await self.state.add_log(
+            'info',
+            'hyperdeck',
+            'Preview disabled by controller; pausing playback on the current frame.',
+        )
+        await self.pause()
 
     async def set_remote_enabled(self, enabled: bool) -> None:
         await self.state.set_remote_enabled(enabled)

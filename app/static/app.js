@@ -413,6 +413,13 @@ function renderHealth(health, safety) {
   DOM.btnArmLive.classList.toggle('active', effectiveSafety.live_controls_armed);
 }
 
+function applySafetyState(safety) {
+  if (!safety) return;
+  if (!state.snapshot) state.snapshot = {};
+  state.snapshot.safety = safety;
+  renderHealth(state.snapshot.health, safety);
+}
+
 function liveActionBlocked() {
   const safety = state.snapshot?.safety;
   return Boolean(safety?.safe_mode_enabled && !safety?.live_controls_armed);
@@ -894,16 +901,18 @@ DOM.btnToggleLogs.addEventListener('click', () => setLogsVisible(!state.logsVisi
 DOM.btnOpenSettings.addEventListener('click', openSettingsModal);
 DOM.btnToggleSafeMode.addEventListener('click', async () => {
   const enabled = !Boolean(state.snapshot?.safety?.safe_mode_enabled);
-  await api('/api/system/safe-mode', {
+  const response = await api('/api/system/safe-mode', {
     method: 'POST',
     body: JSON.stringify({ enabled })
   });
+  applySafetyState(response.safety);
 });
 DOM.btnArmLive.addEventListener('click', async () => {
-  await api('/api/system/arm-controls', {
+  const response = await api('/api/system/arm-controls', {
     method: 'POST',
     body: JSON.stringify({ seconds: 12 })
   });
+  applySafetyState(response.safety);
 });
 DOM.btnRunUpdate.addEventListener('click', async () => {
   const confirmed = await requestConfirm({

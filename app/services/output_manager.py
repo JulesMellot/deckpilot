@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import platform
 import subprocess
+from pathlib import Path
 from typing import List
 
 from app.core.models import VideoOutput
@@ -41,6 +42,12 @@ class OutputManager:
         return next((item for item in outputs if item.selected), None)
 
     def _detect_linux_outputs(self) -> List[VideoOutput]:
+        outputs = self._detect_linux_xrandr_outputs()
+        if outputs:
+            return outputs
+        return self._detect_linux_drm_outputs()
+
+    def _detect_linux_xrandr_outputs(self) -> List[VideoOutput]:
         try:
             result = subprocess.run(['xrandr', '--query'], capture_output=True, text=True, check=False)
         except FileNotFoundError:
@@ -65,6 +72,64 @@ class OutputManager:
             label = physical_name if width is None else f'{physical_name} ({width}x{height})'
             outputs.append(VideoOutput(id=str(logical_index), label=label, width=width, height=height, primary=primary))
             logical_index += 1
+        return outputs
+
+    def _detect_linux_drm_outputs(self) -> List[VideoOutput]:
+        outputs: list[VideoOutput] = []
+        status_files = sorted(Path('/sys/class/drm').glob('card*-*/status'))
+        primary_assigned = False
+        for status_file in status_files:
+            try:
+                status = status_file.read_text(encoding='utf-8').strip().lower()
+            except OSError:
+                continue
+            if status != 'connected':
+                continue
+
+            connector_dir = status_file.parent
+            connector_key = connector_dir.name
+            if '-' not in connector_key:
+                continue
+            card_name, connector_name = connector_key.split('-', 1)
+            mode_file = connector_dir / 'modes'
+            width = height = None
+            refresh_hz = None
+            label = connector_name
+            if mode_file.exists():
+                try:
+                    first_mode = next((line.strip() for line in mode_file.read_text(encoding='utf-8').splitlines() if line.strip()), '')
+                except OSError:
+                    first_mode = ''
+                if first_mode and 'x' in first_mode:
+                    mode_part = first_mode
+                    if '@' in mode_part:
+                        resolution, hz = mode_part.split('@', 1)
+                        try:
+                            refresh_hz = float(hz)
+                        except ValueError:
+                            refresh_hz = None
+                    else:
+                        resolution = mode_part
+                    try:
+                        w, h = resolution.split('x', 1)
+                        width = int(w)
+                        height = int(h)
+                    except ValueError:
+                        width = height = None
+            if width and height:
+                label = f'{connector_name} ({width}x{height})'
+
+            outputs.append(
+                VideoOutput(
+                    id=f'drm:{card_name}.{connector_name}',
+                    label=label,
+                    width=width,
+                    height=height,
+                    refresh_hz=refresh_hz,
+                    primary=not primary_assigned,
+                )
+            )
+            primary_assigned = True
         return outputs
 
     def _detect_macos_outputs(self) -> List[VideoOutput]:

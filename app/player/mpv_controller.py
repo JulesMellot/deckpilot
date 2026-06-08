@@ -152,15 +152,21 @@ class MPVController:
             f'--log-file={log_path}',
             f'--input-ipc-server={self.config.mpv_socket_path}',
         ]
-        if self._selected_output_id:
+        if self._selected_output_id and self._selected_output_id.isdigit():
             base_args.append(f'--fs-screen={self._selected_output_id}')
+        drm_connector = None
+        if self._selected_output_id and self._selected_output_id.startswith('drm:'):
+            drm_connector = self._selected_output_id.split(':', 1)[1]
 
         profiles: list[tuple[str, list[str]]] = [('default', list(base_args))]
         platform_name = platform.system().lower()
         has_graphical_session = bool(os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY'))
 
         if platform_name == 'linux' and not has_graphical_session:
-            profiles.insert(0, ('linux-drm', [*base_args, '--vo=gpu', '--gpu-context=drm']))
+            drm_args = [*base_args, '--vo=gpu', '--gpu-context=drm']
+            if drm_connector:
+                drm_args.append(f'--drm-connector={drm_connector}')
+            profiles.insert(0, ('linux-drm', drm_args))
             profiles.append(('linux-gpu', [*base_args, '--vo=gpu']))
 
         return profiles

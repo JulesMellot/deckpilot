@@ -21,6 +21,7 @@ class AppConfig:
     db_path: str = "/home/pi/pideck/data/pideck.db"
     thumbnails_dir: str = "/home/pi/pideck/data/thumbnails"
     mpv_socket_path: str = "/tmp/pideck-mpv.sock"
+    mpv_log_path: str = "/home/pi/pideck/data/mpv.log"
     mpv_binary: str = "mpv"
     ffmpeg_binary: str = "ffmpeg"
     ffprobe_binary: str = "ffprobe"
@@ -62,6 +63,7 @@ def load_config() -> AppConfig:
         "clips_dir": os.environ.get("PIDECK_CLIPS_DIR"),
         "data_dir": os.environ.get("PIDECK_DATA_DIR"),
         "db_path": os.environ.get("PIDECK_DB_PATH"),
+        "mpv_log_path": os.environ.get("PIDECK_MPV_LOG_PATH"),
         "default_video_format": os.environ.get("PIDECK_VIDEO_FORMAT"),
     }
     raw = _merge_dict(raw, env_overrides)

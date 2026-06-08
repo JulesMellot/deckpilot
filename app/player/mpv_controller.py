@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import platform
 from asyncio.subprocess import Process
 from pathlib import Path
 from typing import Any
@@ -24,31 +26,29 @@ class MPVController:
         socket_path = Path(self.config.mpv_socket_path)
         if socket_path.exists():
             socket_path.unlink()
-        extra_args: list[str] = []
-        if self._selected_output_id:
-            extra_args.append(f'--fs-screen={self._selected_output_id}')
-        self.process = await asyncio.create_subprocess_exec(
-            self.config.mpv_binary,
-            '--idle=yes',
-            '--fullscreen=yes',
-            '--force-window=yes',
-            '--keep-open=always',
-            '--hwdec=auto-safe',
-            f'--input-ipc-server={self.config.mpv_socket_path}',
-            '--audio-display=no',
-            *extra_args,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        for _ in range(20):
-            if socket_path.exists():
-                break
-            await asyncio.sleep(0.25)
-        if socket_path.exists():
-            self._reader, self._writer = await asyncio.open_unix_connection(self.config.mpv_socket_path)
-            self.last_error = None
-            return
-        self.last_error = f'mpv IPC socket was not created at {self.config.mpv_socket_path}'
+        log_path = Path(self.config.mpv_log_path)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text('', encoding='utf-8')
+
+        for profile_name, command in self._startup_profiles(log_path):
+            self.process = await asyncio.create_subprocess_exec(
+                *command,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            for _ in range(24):
+                if socket_path.exists():
+                    self._reader, self._writer = await asyncio.open_unix_connection(self.config.mpv_socket_path)
+                    self.last_error = None
+                    return
+                if self.process.returncode is not None:
+                    break
+                await asyncio.sleep(0.25)
+            await self.stop_process()
+            self.last_error = self._build_start_error(profile_name, log_path)
+
+        if not self.last_error:
+            self.last_error = f'mpv IPC socket was not created at {self.config.mpv_socket_path}'
 
     async def stop_process(self) -> None:
         if self._writer:
@@ -138,6 +138,47 @@ class MPVController:
 
     async def set_video_format(self, video_format: str) -> None:
         self._current_video_format = video_format
+
+    def _startup_profiles(self, log_path: Path) -> list[tuple[str, list[str]]]:
+        base_args = [
+            self.config.mpv_binary,
+            '--idle=yes',
+            '--fullscreen=yes',
+            '--force-window=yes',
+            '--keep-open=always',
+            '--audio-display=no',
+            '--terminal=no',
+            '--hwdec=auto-safe',
+            f'--log-file={log_path}',
+            f'--input-ipc-server={self.config.mpv_socket_path}',
+        ]
+        if self._selected_output_id:
+            base_args.append(f'--fs-screen={self._selected_output_id}')
+
+        profiles: list[tuple[str, list[str]]] = [('default', list(base_args))]
+        platform_name = platform.system().lower()
+        has_graphical_session = bool(os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY'))
+
+        if platform_name == 'linux' and not has_graphical_session:
+            profiles.insert(0, ('linux-drm', [*base_args, '--vo=gpu', '--gpu-context=drm']))
+            profiles.append(('linux-gpu', [*base_args, '--vo=gpu']))
+
+        return profiles
+
+    def _build_start_error(self, profile_name: str, log_path: Path) -> str:
+        tail = self._tail_file(log_path, line_count=8)
+        if tail:
+            return f'mpv startup failed ({profile_name}): {tail}'
+        return f'mpv IPC socket was not created at {self.config.mpv_socket_path} ({profile_name})'
+
+    def _tail_file(self, path: Path, line_count: int = 8) -> str:
+        try:
+            lines = path.read_text(encoding='utf-8', errors='replace').splitlines()
+        except OSError:
+            return ''
+        if not lines:
+            return ''
+        return ' | '.join(lines[-line_count:])
 
 
 def _target_dimensions(video_format: str) -> tuple[int, int]:

@@ -255,6 +255,7 @@ data.update(
         "db_path": str(data_dir / "pideck.db"),
         "thumbnails_dir": str(thumbs_dir),
         "mpv_socket_path": socket_path,
+        "mpv_log_path": str(data_dir / "mpv.log"),
     }
 )
 

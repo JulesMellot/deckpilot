@@ -11,6 +11,7 @@
   "db_path": "/home/pi/pideck/data/pideck.db",
   "thumbnails_dir": "/home/pi/pideck/data/thumbnails",
   "mpv_socket_path": "/tmp/pideck-mpv.sock",
+  "mpv_log_path": "/home/pi/pideck/data/mpv.log",
   "mpv_binary": "mpv",
   "ffmpeg_binary": "ffmpeg",
   "ffprobe_binary": "ffprobe",

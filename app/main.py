@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import os
 
 import uvicorn
 
@@ -38,8 +39,10 @@ def create_application() -> tuple[AppConfig, object]:
         selected_output = await output_manager.get_selected_output()
         if selected_output:
             await player.set_output(selected_output.id)
-        with contextlib.suppress(FileNotFoundError):
-            await player.start()
+        preload_player = bool(os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY'))
+        if preload_player:
+            with contextlib.suppress(FileNotFoundError):
+                await player.start()
         await controller.start()
         await controller.refresh_clips()
         await server.start()

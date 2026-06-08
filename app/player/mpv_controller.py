@@ -107,8 +107,7 @@ class MPVController:
     async def play_file(self, path: str, loop: bool = False, is_vertical: bool = False) -> bool:
         if not await self._command_ok(['set_property', 'vf', '']):
             return False
-        # DeckPilot manages loop restarts itself to avoid losing audio on some Raspberry Pi/mpv setups.
-        if not await self._command_ok(['set_property', 'loop-file', 'no']):
+        if not await self._command_ok(['set_property', 'loop-file', 'inf' if loop else 'no']):
             return False
         if not await self._command_ok(['loadfile', path, 'replace']):
             return False

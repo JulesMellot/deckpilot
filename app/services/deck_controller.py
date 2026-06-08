@@ -248,7 +248,10 @@ class DeckController:
 
     async def play_single_clip(self, clip_id: int) -> bool:
         self._playlist_mode = False
-        return await self.play(clip_id=clip_id, loop=None, single_clip=True)
+        clip = await self.clip_store.get_clip(clip_id)
+        if not clip:
+            return False
+        return await self.play(clip_id=clip_id, loop=clip.loop_enabled, single_clip=True)
 
     async def play_next_playlist_item(self) -> bool:
         playlist = await self.playlist_store.get_active_playlist()

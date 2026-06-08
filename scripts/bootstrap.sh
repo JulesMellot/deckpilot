@@ -2,7 +2,6 @@
 set -euo pipefail
 
 DECKPILOT_REPO_URL="${DECKPILOT_REPO_URL:-https://github.com/JulesMellot/deckpilot.git}"
-INSTALL_DIR="${DECKPILOT_INSTALL_DIR:-$HOME/deckpilot}"
 APP_NAME="DeckPilot"
 ASSUME_YES=0
 SERVICE_MODE="ask"
@@ -123,6 +122,32 @@ SUDO=""
 if [[ "$(id -u)" -ne 0 ]] && command_exists sudo; then
   SUDO="sudo"
 fi
+
+resolve_run_user() {
+  if [[ "$(id -u)" -eq 0 ]] && [[ -n "${SUDO_USER:-}" ]] && [[ "${SUDO_USER}" != "root" ]]; then
+    echo "${SUDO_USER}"
+    return
+  fi
+  id -un
+}
+
+resolve_home_dir() {
+  local user_name="$1"
+  if command_exists getent; then
+    getent passwd "$user_name" | cut -d: -f6
+    return
+  fi
+  python3 - <<PY
+import os
+import pwd
+print(pwd.getpwnam(${user_name@Q}).pw_dir)
+PY
+}
+
+RUN_USER="$(resolve_run_user)"
+RUN_HOME="$(resolve_home_dir "$RUN_USER")"
+RUN_HOME="${RUN_HOME:-$HOME}"
+INSTALL_DIR="${DECKPILOT_INSTALL_DIR:-$RUN_HOME/deckpilot}"
 
 OS_NAME="$(detect_os)"
 [[ "$OS_NAME" != "unsupported" ]] || die "This bootstrap supports Linux and macOS. Use bootstrap.ps1 on Windows."
@@ -248,8 +273,6 @@ install_systemd_service() {
   command_exists systemctl || return
   local service_name="deckpilot.service"
   local service_path="/etc/systemd/system/$service_name"
-  local run_user
-  run_user="$(id -un)"
 
   log "Installing systemd service: $service_name"
   $SUDO tee "$service_path" >/dev/null <<EOF
@@ -260,7 +283,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=$run_user
+User=$RUN_USER
 WorkingDirectory=$INSTALL_DIR
 Environment=PIDECK_CONFIG=$INSTALL_DIR/config.json
 ExecStart=$INSTALL_DIR/.venv/bin/python -m app.main

@@ -8,6 +8,8 @@ For a guided install that detects the platform, installs missing dependencies, p
 curl -fsSL https://raw.githubusercontent.com/JulesMellot/deckpilot/main/scripts/bootstrap.sh | bash
 ```
 
+Run the installer from your normal user account. Do not switch to a root shell with `sudo su` first.
+
 If the repository is already cloned locally:
 
 ```bash

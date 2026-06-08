@@ -42,6 +42,8 @@ chmod +x scripts/install.sh
 
 The `scripts/install.sh` script is now a Raspberry Pi wrapper that runs the shared bootstrap installer with `/home/pi/pideck` as the target directory and enables a `systemd` service.
 
+On supported Linux SBC installs, the bootstrap also installs an HDMI boot info service that keeps the local screen updated with the current IP address, Web UI URL, and HyperDeck endpoint after boot.
+
 ## HDMI Configuration
 
 Depending on the OS image, the file is usually either `/boot/config.txt` or `/boot/firmware/config.txt`.
@@ -70,6 +72,13 @@ ATEM does not scale HDMI sources like a traditional production scaler. The Raspb
 ```bash
 sudo systemctl status deckpilot.service
 sudo journalctl -u deckpilot.service -f
+```
+
+HDMI boot info service:
+
+```bash
+sudo systemctl status deckpilot-boot-info.service
+sudo journalctl -u deckpilot-boot-info.service -f
 ```
 
 ## Web Access
@@ -111,12 +120,16 @@ stop
 python3 scripts/hyperdeck_test_client.py PI_IP 9993
 ```
 
-## Boot Splash Screen
+## Boot HDMI Info Screen
 
-Simple and robust approach:
+DeckPilot now installs a secondary `systemd` service on supported Linux SBC targets that continuously renders the following information on the local HDMI console:
 
-- Add a secondary `systemd` service that launches a small Python script in framebuffer or X to display `hostname -I` at boot.
-- Simpler alternative: enable `agetty --autologin` on the local console and print the IP automatically from `/etc/profile`.
+- hostname
+- primary IP address
+- Web UI URL
+- HyperDeck TCP endpoint
+
+This makes first boot and reboot recovery easier because the operator can immediately see where to connect from another device on the network.
 
 ## Pi 3B Performance
 

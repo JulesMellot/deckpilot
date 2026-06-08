@@ -66,6 +66,7 @@ irm https://raw.githubusercontent.com/JulesMellot/deckpilot/main/scripts/bootstr
 - installs Python requirements
 - writes a local `config.json`
 - optionally installs and enables a `systemd` service on Linux
+- installs an HDMI boot info screen service automatically on supported Linux SBC targets
 
 ### Platform Notes
 

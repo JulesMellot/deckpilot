@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import shutil
 import time
 from typing import Any, Dict
 
@@ -37,19 +38,29 @@ class DeckController:
         self._pause_started_at: float | None = None
         self._accumulated_pause_seconds: float = 0.0
         self._ticker_task: asyncio.Task | None = None
+        self._health_task: asyncio.Task | None = None
         self._volume: int = 100
         self._muted: bool = False
         self._playlist_mode = False
         self._playlist_loop = False
+        self._last_clip_sync_at: float | None = None
+        self._last_error: str | None = None
+        self._last_error_key: str | None = None
+        self._recovering_player = False
 
     async def start(self) -> None:
         self._ticker_task = asyncio.create_task(self._ticker())
+        self._health_task = asyncio.create_task(self._health_reporter())
 
     async def stop(self) -> None:
         if self._ticker_task:
             self._ticker_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._ticker_task
+        if self._health_task:
+            self._health_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._health_task
 
     async def list_clips(self):
         return await self.clip_store.list_clips()
@@ -58,8 +69,11 @@ class DeckController:
         await self.clip_store.sync_with_disk()
         await self.playlist_store.sync_active_playlist_from_clips()
         clips = await self.clip_store.list_clips()
+        self._last_clip_sync_at = time.time()
         await self.state.publish('clips', {'clips': [clip.to_dict() for clip in clips]})
         await self.state.publish('playlist', await self.playlist_store.get_active_playlist())
+        await self.state.publish('slot', await self.slot_snapshot())
+        await self._publish_health()
 
     async def goto_clip(self, clip_id: int) -> bool:
         clip = await self.clip_store.get_clip(clip_id)
@@ -73,7 +87,7 @@ class DeckController:
             total_seconds=clip.duration_seconds,
             remaining_seconds=clip.duration_seconds,
             elapsed_seconds=0.0,
-            video_format=self.config.default_video_format,
+            video_format=self.state.transport.video_format,
             loop=clip.loop_enabled,
         )
         return True
@@ -82,10 +96,18 @@ class DeckController:
         target_clip_id = clip_id or self.current_clip_id or 1
         clip = await self.clip_store.get_clip(target_clip_id)
         if not clip:
+            await self._report_error('playback', f'Cannot play clip {target_clip_id}: clip not found.')
+            await self._publish_health()
+            return False
+        if not clip.filepath:
+            await self._report_error('playback', f'Cannot play clip "{clip.name}": missing file path.')
+            await self._publish_health()
             return False
         self.current_clip_id = clip.deck_id
         use_loop = clip.loop_enabled if loop is None else loop
-        await self.player.play_file(clip.filepath, loop=use_loop, is_vertical=clip.is_vertical)
+        started = await self._start_clip_playback(clip, use_loop)
+        if not started:
+            return False
         self._play_started_at = time.monotonic()
         self._pause_started_at = None
         self._accumulated_pause_seconds = 0.0
@@ -99,28 +121,38 @@ class DeckController:
             total_seconds=clip.duration_seconds,
             remaining_seconds=clip.duration_seconds,
             elapsed_seconds=0.0,
-            video_format=self.config.default_video_format,
+            video_format=self.state.transport.video_format,
             playlist_mode=self._playlist_mode,
             playlist_loop=self._playlist_loop,
             playlist_position=await self._playlist_position_for_clip(clip.deck_id),
         )
+        self._last_error = None
+        self._last_error_key = None
+        await self._publish_health()
         return True
 
     async def pause(self) -> None:
-        await self.player.pause(True)
+        if not await self.player.pause(True):
+            await self._report_error('player', f'Pause failed: {self.player.last_error or "unknown player error"}')
+            await self._publish_health()
+            return
         if self._pause_started_at is None:
             self._pause_started_at = time.monotonic()
         await self.state.set_transport(status='stopped', paused=True, speed=0)
 
     async def resume(self) -> None:
-        await self.player.pause(False)
+        if not await self.player.pause(False):
+            await self._report_error('player', f'Resume failed: {self.player.last_error or "unknown player error"}')
+            await self._publish_health()
+            return
         if self._pause_started_at is not None:
             self._accumulated_pause_seconds += time.monotonic() - self._pause_started_at
             self._pause_started_at = None
         await self.state.set_transport(status='play', paused=False, speed=100)
 
     async def stop_playback(self) -> None:
-        await self.player.stop()
+        if not await self.player.stop() and await self.player.is_available():
+            await self._report_error('player', f'Stop failed: {self.player.last_error or "unknown player error"}')
         self._play_started_at = None
         self._pause_started_at = None
         self._accumulated_pause_seconds = 0.0
@@ -135,6 +167,7 @@ class DeckController:
             display_timecode='00:00:00:00',
             playlist_mode=False,
         )
+        await self._publish_health()
 
     async def cut_to_black(self) -> bool:
         clips = await self.clip_store.list_clips()
@@ -175,15 +208,15 @@ class DeckController:
     async def set_video_format(self, video_format: str) -> None:
         await self.player.set_video_format(video_format)
         await self.state.set_transport(video_format=video_format)
+        await self.state.publish('slot', await self.slot_snapshot())
+        await self._publish_health()
 
     async def play_playlist(self, loop: bool = False) -> bool:
         playlist = await self.playlist_store.get_active_playlist()
         items = playlist.get('items', [])
         if not items:
             return False
-        self._playlist_mode = True
-        self._playlist_loop = loop
-        return await self.play(clip_id=items[0]['clip_id'], loop=False, single_clip=False)
+        return await self.play_playlist_from_position(1, loop=loop)
 
     async def set_playlist_loop(self, enabled: bool) -> None:
         self._playlist_loop = enabled
@@ -211,6 +244,17 @@ class DeckController:
         self._playlist_mode = True
         return await self.play(clip_id=next_item['clip_id'], loop=False, single_clip=False)
 
+    async def play_playlist_from_position(self, position: int, loop: bool | None = None) -> bool:
+        playlist = await self.playlist_store.get_active_playlist()
+        items = playlist.get('items', [])
+        if not items:
+            return False
+        index = max(1, min(position, len(items))) - 1
+        self._playlist_mode = True
+        if loop is not None:
+            self._playlist_loop = loop
+        return await self.play(clip_id=items[index]['clip_id'], loop=False, single_clip=False)
+
     async def list_outputs(self) -> list[dict[str, Any]]:
         outputs = await self.output_manager.list_outputs()
         return [item.to_dict() for item in outputs]
@@ -219,22 +263,67 @@ class DeckController:
         await self.output_manager.set_selected_output(output_id)
         await self.player.set_output(output_id)
         await self.state.publish('outputs', {'outputs': await self.list_outputs()})
+        await self._publish_health()
 
     async def playlist_snapshot(self) -> Dict[str, Any]:
         return await self.playlist_store.get_active_playlist()
 
     async def set_volume(self, volume: int) -> None:
         self._volume = max(0, min(volume, 100))
-        await self.player.set_volume(self._volume)
+        if await self.player.is_available() and not await self.player.set_volume(self._volume):
+            await self._report_error('player', f'Volume update failed: {self.player.last_error or "unknown player error"}')
         await self.state.publish('audio', {'volume': self._volume, 'muted': self._muted})
+        await self._publish_health()
 
     async def set_mute(self, enabled: bool) -> None:
         self._muted = enabled
-        await self.player.set_mute(enabled)
+        if await self.player.is_available() and not await self.player.set_mute(enabled):
+            await self._report_error('player', f'Mute update failed: {self.player.last_error or "unknown player error"}')
         await self.state.publish('audio', {'volume': self._volume, 'muted': self._muted})
+        await self._publish_health()
 
     def audio_snapshot(self) -> Dict[str, Any]:
         return {'volume': self._volume, 'muted': self._muted}
+
+    async def slot_snapshot(self) -> Dict[str, Any]:
+        clips = await self.clip_store.list_clips()
+        return {
+            'slot_id': 1,
+            'status': 'mounted',
+            'volume_name': self.config.app_name,
+            'clip_count': len(clips),
+            'video_format': self.state.transport.video_format,
+        }
+
+    async def health_snapshot(self) -> Dict[str, Any]:
+        clips = await self.clip_store.list_clips()
+        outputs = await self.output_manager.list_outputs()
+        selected_output = next((item for item in outputs if item.selected), None)
+        free_bytes = 0
+        total_bytes = 0
+        try:
+            usage = shutil.disk_usage(self.config.data_dir)
+            free_bytes = usage.free
+            total_bytes = usage.total
+        except OSError:
+            pass
+        player_available = await self.player.is_available()
+        return {
+            'player_available': player_available,
+            'player_error': self.player.last_error,
+            'last_error': self._last_error,
+            'clip_count': len(clips),
+            'current_clip_exists': bool(self.current_clip_id and await self.clip_store.get_clip(self.current_clip_id)),
+            'selected_output': selected_output.to_dict() if selected_output else None,
+            'connected_controllers': len(self.state.connected_controllers),
+            'remote_enabled': self.state.remote_enabled,
+            'preview_enabled': self.state.preview_enabled,
+            'safe_mode_enabled': self.state.safe_mode_enabled,
+            'live_controls_armed': self.state.live_controls_armed(),
+            'clips_last_synced_at': self._last_clip_sync_at,
+            'storage_free_bytes': free_bytes,
+            'storage_total_bytes': total_bytes,
+        }
 
     async def snapshot(self) -> Dict[str, Any]:
         clips = await self.clip_store.list_clips()
@@ -249,6 +338,8 @@ class DeckController:
             'outputs': await self.list_outputs(),
             'playlist': await self.playlist_snapshot(),
             'network': await self.network_info.snapshot(),
+            'health': await self.health_snapshot(),
+            'safety': self.state.safety_snapshot(),
             'app_name': self.config.app_name,
         }
 
@@ -264,8 +355,15 @@ class DeckController:
             await asyncio.sleep(self.config.ws_tick_seconds)
             if self.state.transport.status != 'play' or not self.current_clip_id or self._play_started_at is None:
                 continue
+            if not await self.player.is_available():
+                recovered = await self._recover_player_for_current_clip()
+                if not recovered:
+                    await self.stop_playback()
+                    continue
             clip = await self.clip_store.get_clip(self.current_clip_id)
             if not clip:
+                await self._report_error('playback', f'Current clip {self.current_clip_id} no longer exists.')
+                await self.stop_playback()
                 continue
             if self._pause_started_at is not None:
                 elapsed = max(0.0, (self._pause_started_at - self._play_started_at) - self._accumulated_pause_seconds)
@@ -287,3 +385,72 @@ class DeckController:
                 timecode=seconds_to_timecode(elapsed, clip.framerate),
                 display_timecode=seconds_to_timecode(elapsed, clip.framerate),
             )
+
+    async def _health_reporter(self) -> None:
+        while True:
+            await asyncio.sleep(2.0)
+            await self._publish_health()
+            await self.state.publish('safety', self.state.safety_snapshot())
+
+    async def _publish_health(self) -> None:
+        await self.state.publish('health', await self.health_snapshot())
+
+    async def _start_clip_playback(self, clip, use_loop: bool) -> bool:
+        if not await self._ensure_player_ready():
+            await self._report_error('player', f'Player unavailable: {self.player.last_error or "startup failed"}')
+            await self._publish_health()
+            return False
+        started = await self.player.play_file(clip.filepath, loop=use_loop, is_vertical=clip.is_vertical)
+        if started:
+            return True
+        await self._report_error('player', f'Playback failed for "{clip.name}": {self.player.last_error or "unknown player error"}')
+        if not await self._ensure_player_ready(force_restart=True):
+            await self._publish_health()
+            return False
+        started = await self.player.play_file(clip.filepath, loop=use_loop, is_vertical=clip.is_vertical)
+        if not started:
+            await self._report_error('player', f'Playback recovery failed for "{clip.name}": {self.player.last_error or "unknown player error"}')
+            await self._publish_health()
+            return False
+        return True
+
+    async def _ensure_player_ready(self, force_restart: bool = False) -> bool:
+        if force_restart and self.player.process is not None:
+            await self.player.stop_process()
+        if await self.player.is_available():
+            return True
+        try:
+            with contextlib.suppress(FileNotFoundError):
+                await self.player.start()
+            if not await self.player.is_available():
+                return False
+            await self.player.set_video_format(self.state.transport.video_format)
+            if self._volume != 100:
+                await self.player.set_volume(self._volume)
+            if self._muted:
+                await self.player.set_mute(True)
+            return True
+        except Exception as exc:
+            await self._report_error('player', f'Player start failed: {exc}')
+            return False
+
+    async def _recover_player_for_current_clip(self) -> bool:
+        if self._recovering_player:
+            return False
+        self._recovering_player = True
+        try:
+            clip = await self.clip_store.get_clip(self.current_clip_id or 0)
+            if not clip:
+                return False
+            await self._report_error('player', 'Player connection lost. Attempting automatic recovery.')
+            return await self._start_clip_playback(clip, self.state.transport.loop)
+        finally:
+            self._recovering_player = False
+
+    async def _report_error(self, source: str, message: str) -> None:
+        self._last_error = message
+        error_key = f'{source}:{message}'
+        if self._last_error_key == error_key:
+            return
+        self._last_error_key = error_key
+        await self.state.add_log('error', source, message)

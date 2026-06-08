@@ -143,6 +143,33 @@
     <!-- RIGHT PANEL: AUDIO, SETTINGS & LOGS -->
     <section class="panel panel-right">
 
+      <div class="sub-panel health-panel">
+        <h2>SYSTEM HEALTH</h2>
+        <div class="health-grid">
+          <div class="health-card">
+            <span class="health-label">PLAYER</span>
+            <span class="health-value" id="health-player">CHECKING</span>
+          </div>
+          <div class="health-card">
+            <span class="health-label">OUTPUT</span>
+            <span class="health-value" id="health-output">CHECKING</span>
+          </div>
+          <div class="health-card">
+            <span class="health-label">STORAGE</span>
+            <span class="health-value" id="health-storage">CHECKING</span>
+          </div>
+          <div class="health-card">
+            <span class="health-label">REMOTE</span>
+            <span class="health-value" id="health-remote">CHECKING</span>
+          </div>
+        </div>
+        <div class="health-meta" id="health-meta">Collecting system health...</div>
+        <div class="playlist-toolbar health-toolbar">
+          <button id="btn-toggle-safe-mode" class="action-btn">SAFE MODE ON</button>
+          <button id="btn-arm-live" class="action-btn">ARM LIVE</button>
+        </div>
+      </div>
+
       <!-- Playlist -->
       <div class="sub-panel playlist-panel">
         <h2>ACTIVE PLAYLIST</h2>
@@ -154,8 +181,11 @@
           <button id="btn-new-playlist" class="action-btn">NEW</button>
           <button id="btn-activate-playlist" class="action-btn">ACTIVATE</button>
           <button id="btn-play-playlist" class="action-btn">PLAY</button>
+          <button id="btn-play-playlist-from" class="action-btn">PLAY HERE</button>
+          <button id="btn-next-playlist" class="action-btn">NEXT</button>
           <button id="btn-loop-playlist" class="action-btn">LOOP</button>
           <button id="btn-add-selected-playlist" class="action-btn">ADD SELECTED</button>
+          <button id="btn-clear-playlist" class="action-btn">CLEAR</button>
         </div>
         <div class="playlist-items" id="playlist-items"></div>
       </div>

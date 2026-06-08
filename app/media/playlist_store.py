@@ -140,6 +140,14 @@ class PlaylistStore:
                 conn.execute('UPDATE playlist_items SET sort_order = ? WHERE id = ?', (sort_order, row['id']))
             conn.commit()
 
+    async def clear_playlist(self, playlist_id: int) -> None:
+        await asyncio.to_thread(self._clear_playlist_sync, playlist_id)
+
+    def _clear_playlist_sync(self, playlist_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute('DELETE FROM playlist_items WHERE playlist_id = ?', (playlist_id,))
+            conn.commit()
+
     async def get_active_playlist(self) -> dict:
         return await asyncio.to_thread(self._get_active_playlist_sync)
 

@@ -6,6 +6,7 @@ INSTALL_DIR="${DECKPILOT_INSTALL_DIR:-$HOME/deckpilot}"
 APP_NAME="DeckPilot"
 ASSUME_YES=0
 SERVICE_MODE="ask"
+BOOT_INFO_MODE="auto"
 
 log() {
   printf '\n[%s] %s\n' "$APP_NAME" "$1"
@@ -30,6 +31,8 @@ Options:
   --yes                  Non-interactive mode
   --install-service      Install and enable a systemd service when available
   --skip-service         Do not install a systemd service
+  --install-boot-info    Install the HDMI boot info service on supported Linux SBCs
+  --skip-boot-info       Do not install the HDMI boot info service
   -h, --help             Show this help
 EOF
 }
@@ -54,6 +57,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-service)
       SERVICE_MODE="no"
+      shift
+      ;;
+    --install-boot-info)
+      BOOT_INFO_MODE="yes"
+      shift
+      ;;
+    --skip-boot-info)
+      BOOT_INFO_MODE="no"
       shift
       ;;
     -h|--help)
@@ -89,6 +100,23 @@ detect_os() {
     Darwin) echo "macos" ;;
     *) echo "unsupported" ;;
   esac
+}
+
+detect_arch() {
+  uname -m
+}
+
+is_linux_sbc() {
+  [[ "$OS_NAME" == "linux" ]] || return 1
+  local arch
+  arch="$(detect_arch)"
+  if [[ "$arch" =~ ^(armv|aarch64|arm64) ]]; then
+    return 0
+  fi
+  if [[ -f /sys/firmware/devicetree/base/model ]]; then
+    return 0
+  fi
+  return 1
 }
 
 SUDO=""
@@ -247,6 +275,59 @@ EOF
   $SUDO systemctl restart "$service_name"
 }
 
+install_boot_info_service() {
+  command_exists systemctl || return
+  [[ -e /dev/tty1 ]] || {
+    warn "Skipping HDMI boot info service because /dev/tty1 is not available."
+    return
+  }
+
+  local service_name="deckpilot-boot-info.service"
+  local service_path="/etc/systemd/system/$service_name"
+  local script_path="$INSTALL_DIR/scripts/show_boot_ip.py"
+  local python_path="$INSTALL_DIR/.venv/bin/python"
+
+  if [[ ! -f "$script_path" ]]; then
+    warn "Skipping HDMI boot info service because $script_path is missing."
+    return
+  fi
+
+  if [[ ! -x "$python_path" ]]; then
+    python_path="$(command -v python3 || true)"
+  fi
+  [[ -n "$python_path" ]] || {
+    warn "Skipping HDMI boot info service because Python is unavailable."
+    return
+  }
+
+  log "Installing HDMI boot info service: $service_name"
+  $SUDO tee "$service_path" >/dev/null <<EOF
+[Unit]
+Description=DeckPilot HDMI Boot Info
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=$INSTALL_DIR
+ExecStart=$python_path $script_path --config $INSTALL_DIR/config.json --tty /dev/tty1
+Restart=always
+RestartSec=3
+StandardInput=tty
+StandardOutput=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  $SUDO systemctl daemon-reload
+  $SUDO systemctl enable "$service_name"
+  $SUDO systemctl restart "$service_name"
+}
+
 print_summary() {
   local host_display="127.0.0.1"
   if [[ "$OS_NAME" == "linux" ]] && command_exists hostname; then
@@ -294,6 +375,14 @@ write_config
 if [[ "$OS_NAME" == "linux" ]] && command_exists systemctl; then
   if [[ "$SERVICE_MODE" == "yes" ]] || { [[ "$SERVICE_MODE" == "ask" ]] && confirm "Install DeckPilot as a systemd service?" "y"; }; then
     install_systemd_service
+  fi
+fi
+
+if [[ "$OS_NAME" == "linux" ]] && command_exists systemctl; then
+  if [[ "$BOOT_INFO_MODE" == "yes" ]] || { [[ "$BOOT_INFO_MODE" == "auto" ]] && is_linux_sbc; }; then
+    if [[ "$BOOT_INFO_MODE" == "yes" ]] || confirm "Install the HDMI boot info screen service?" "y"; then
+      install_boot_info_service
+    fi
   fi
 fi
 

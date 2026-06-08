@@ -2,6 +2,7 @@ const state = {
   snapshot: null,
   dragClipId: null,
   selectedClipId: null,
+  selectedPlaylistPosition: 1,
   folders: [],
   playlists: [],
   dialogResolver: null,
@@ -57,13 +58,23 @@ const DOM = {
   btnNewPlaylist: document.getElementById('btn-new-playlist'),
   btnActivatePlaylist: document.getElementById('btn-activate-playlist'),
   btnPlayPlaylist: document.getElementById('btn-play-playlist'),
+  btnPlayPlaylistFrom: document.getElementById('btn-play-playlist-from'),
+  btnNextPlaylist: document.getElementById('btn-next-playlist'),
   btnLoopPlaylist: document.getElementById('btn-loop-playlist'),
   btnAddSelectedPlaylist: document.getElementById('btn-add-selected-playlist'),
+  btnClearPlaylist: document.getElementById('btn-clear-playlist'),
   configVolume: document.getElementById('config-volume'),
   volumeValue: document.getElementById('volume-value'),
   btnMute: document.getElementById('btn-mute'),
   configFormat: document.getElementById('config-format'),
   configOutput: document.getElementById('config-output'),
+  healthPlayer: document.getElementById('health-player'),
+  healthOutput: document.getElementById('health-output'),
+  healthStorage: document.getElementById('health-storage'),
+  healthRemote: document.getElementById('health-remote'),
+  healthMeta: document.getElementById('health-meta'),
+  btnToggleSafeMode: document.getElementById('btn-toggle-safe-mode'),
+  btnArmLive: document.getElementById('btn-arm-live'),
   terminalLogs: document.getElementById('terminal-logs'),
   panelRight: document.querySelector('.panel-right'),
   logsPanel: document.querySelector('.logs-panel'),
@@ -97,6 +108,19 @@ function formatClock(seconds) {
 function formatDateTime(timestampSeconds) {
   if (!timestampSeconds) return 'n/a';
   return new Date(timestampSeconds * 1000).toLocaleString('en-GB', { hour12: false });
+}
+
+function formatBytes(value) {
+  const bytes = Number(value || 0);
+  if (bytes <= 0) return 'n/a';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let amount = bytes;
+  let unitIndex = 0;
+  while (amount >= 1024 && unitIndex < units.length - 1) {
+    amount /= 1024;
+    unitIndex += 1;
+  }
+  return `${amount.toFixed(unitIndex >= 3 ? 1 : 0)} ${units[unitIndex]}`;
 }
 
 async function api(path, options = {}) {
@@ -145,11 +169,15 @@ document.addEventListener('keydown', (e) => {
       break;
     case 'Escape':
       e.preventDefault();
-      api('/api/transport/stop', { method: 'POST' }).catch(console.error);
+      ensureLiveActionAllowed('Stop playback').then((allowed) => {
+        if (allowed) api('/api/transport/stop', { method: 'POST' }).catch(console.error);
+      });
       break;
     case 'Enter':
       e.preventDefault();
-      api('/api/system/black', { method: 'POST' }).catch(console.error);
+      ensureLiveActionAllowed('Cut to black').then((allowed) => {
+        if (allowed) api('/api/system/black', { method: 'POST' }).catch(console.error);
+      });
       break;
     case 'ArrowLeft':
       e.preventDefault();
@@ -350,6 +378,52 @@ function renderUpdateStatus(update) {
   DOM.btnRunUpdate.classList.toggle('active', Boolean(update.update_available) && !busy && update.can_update);
 }
 
+function renderHealth(health, safety) {
+  const effectiveSafety = safety || state.snapshot?.safety || {};
+  if (!health) {
+    DOM.healthPlayer.textContent = 'UNKNOWN';
+    DOM.healthOutput.textContent = 'UNKNOWN';
+    DOM.healthStorage.textContent = 'UNKNOWN';
+    DOM.healthRemote.textContent = 'UNKNOWN';
+    DOM.healthMeta.textContent = 'System health unavailable.';
+    return;
+  }
+  DOM.healthPlayer.textContent = health.player_available ? 'ONLINE' : 'OFFLINE';
+  DOM.healthOutput.textContent = health.selected_output?.label || 'DEFAULT';
+  DOM.healthStorage.textContent = formatBytes(health.storage_free_bytes);
+  DOM.healthRemote.textContent = health.remote_enabled ? 'ENABLED' : 'DISABLED';
+
+  const lines = [
+    `Clips: ${health.clip_count || 0} | Controllers: ${health.connected_controllers || 0}`,
+    `Safe mode: ${effectiveSafety.safe_mode_enabled ? 'ON' : 'OFF'} | Armed: ${effectiveSafety.live_controls_armed ? `${effectiveSafety.armed_seconds_remaining || 0}s` : 'NO'}`,
+  ];
+  if (health.clips_last_synced_at) {
+    lines.push(`Clip sync: ${formatDateTime(health.clips_last_synced_at)}`);
+  }
+  if (health.last_error) {
+    lines.push(`Last error: ${health.last_error}`);
+  } else if (health.player_error) {
+    lines.push(`Player error: ${health.player_error}`);
+  }
+  DOM.healthMeta.textContent = lines.join('\n');
+
+  DOM.btnToggleSafeMode.textContent = effectiveSafety.safe_mode_enabled ? 'SAFE MODE ON' : 'SAFE MODE OFF';
+  DOM.btnToggleSafeMode.classList.toggle('active', effectiveSafety.safe_mode_enabled);
+  DOM.btnArmLive.textContent = effectiveSafety.live_controls_armed ? `ARMED ${effectiveSafety.armed_seconds_remaining || 0}s` : 'ARM LIVE';
+  DOM.btnArmLive.classList.toggle('active', effectiveSafety.live_controls_armed);
+}
+
+function liveActionBlocked() {
+  const safety = state.snapshot?.safety;
+  return Boolean(safety?.safe_mode_enabled && !safety?.live_controls_armed);
+}
+
+async function ensureLiveActionAllowed(actionLabel) {
+  if (!liveActionBlocked()) return true;
+  await showNotice('Safe Mode', `${actionLabel} is locked while Safe Mode is enabled. Click ARM LIVE first.`);
+  return false;
+}
+
 function stopUpdatePolling() {
   if (!state.updatePollTimer) return;
   clearInterval(state.updatePollTimer);
@@ -402,9 +476,41 @@ async function playPlaylist() {
   });
 }
 
+async function playPlaylistFromSelection() {
+  const playlistId = currentPlaylistId();
+  if (!playlistId) return;
+  await api(`/api/playlists/${playlistId}/play-from`, {
+    method: 'POST',
+    body: JSON.stringify({
+      position: state.selectedPlaylistPosition || 1,
+      loop: Boolean(state.snapshot?.transport?.playlist_loop)
+    })
+  });
+}
+
+async function playNextPlaylistSelection() {
+  const playlistId = currentPlaylistId();
+  if (!playlistId) return;
+  await api(`/api/playlists/${playlistId}/next`, { method: 'POST' });
+}
+
+async function clearCurrentPlaylist() {
+  const playlistId = currentPlaylistId();
+  if (!playlistId) return;
+  const confirmed = await requestConfirm({
+    title: 'Clear Playlist',
+    message: 'Remove every item from the active playlist?',
+    confirmLabel: 'CLEAR'
+  });
+  if (!confirmed) return;
+  await api(`/api/playlists/${playlistId}/items`, { method: 'DELETE' });
+  state.selectedPlaylistPosition = 1;
+  await refresh();
+}
+
 function renderState(snapshot) {
   state.snapshot = snapshot;
-  const { transport, clips, connections, logs, audio, outputs, playlist, network } = snapshot;
+  const { transport, clips, connections, logs, audio, outputs, playlist, network, health, safety } = snapshot;
   if (!state.selectedClipId && clips.length) {
     state.selectedClipId = clips[0].deck_id;
   }
@@ -457,6 +563,7 @@ function renderState(snapshot) {
   renderPlaylist(playlist || { playlist: null, items: [] }, transport.clip_id);
   renderMediaGrid(filteredClips(), transport.clip_id, transport.status);
   renderPreview();
+  renderHealth(health, safety);
   setLogsVisible(state.logsVisible);
 
   const logText = (logs || []).slice(-80).map((entry) => `[${entry.created_at.split('T')[1].substring(0, 8)}] ${entry.message}`).join('\n');
@@ -522,6 +629,9 @@ function renderPlaylists() {
 
 function renderPlaylist(playlistPayload, activeClipId) {
   const items = playlistPayload.items || [];
+  if (!items.some((item) => item.position === state.selectedPlaylistPosition)) {
+    state.selectedPlaylistPosition = items[0]?.position || 1;
+  }
   DOM.playlistCount.textContent = `${items.length} items`;
   DOM.playlistItems.innerHTML = '';
   items.forEach((item) => {
@@ -532,10 +642,22 @@ function renderPlaylist(playlistPayload, activeClipId) {
     node.querySelector('.playlist-item-name').textContent = item.clip_name;
     node.querySelector('.playlist-item-time').textContent = item.duration_timecode.substring(0, 8);
     if (item.clip_id === activeClipId) node.classList.add('active');
+    if (item.position === state.selectedPlaylistPosition) node.classList.add('selected');
     node.addEventListener('click', async () => {
+      state.selectedPlaylistPosition = item.position;
       state.selectedClipId = item.clip_id;
+      renderPlaylist(playlistPayload, activeClipId);
       renderPreview();
       await api(`/api/clips/${item.clip_id}/goto`, { method: 'POST' });
+    });
+    node.addEventListener('dblclick', async () => {
+      const playlistId = playlistPayload.playlist?.id;
+      if (!playlistId) return;
+      state.selectedPlaylistPosition = item.position;
+      await api(`/api/playlists/${playlistId}/play-from`, {
+        method: 'POST',
+        body: JSON.stringify({ position: item.position })
+      });
     });
     node.querySelector('.playlist-item-remove').addEventListener('click', async (event) => {
       event.stopPropagation();
@@ -711,6 +833,7 @@ async function handleClipAction(clip, action) {
     });
     if (name) await api(`/api/clips/${clip.deck_id}/rename`, { method: 'PATCH', body: JSON.stringify({ name }) });
   } else if (action === 'delete') {
+    if (!await ensureLiveActionAllowed('Clip deletion')) return;
     const confirmed = await requestConfirm({
       title: 'Delete Clip',
       message: `Supprimer définitivement ${clip.name} ?`,
@@ -756,14 +879,34 @@ async function uploadFiles(fileList) {
 }
 
 DOM.btnPlay.addEventListener('click', togglePlayPause);
-DOM.btnStop.addEventListener('click', async () => api('/api/transport/stop', { method: 'POST' }));
+DOM.btnStop.addEventListener('click', async () => {
+  if (!await ensureLiveActionAllowed('Stop playback')) return;
+  await api('/api/transport/stop', { method: 'POST' });
+});
 DOM.btnPrev.addEventListener('click', () => playAdjacentClip(-1));
 DOM.btnNext.addEventListener('click', () => playAdjacentClip(1));
-DOM.btnBlack.addEventListener('click', async () => api('/api/system/black', { method: 'POST' }));
+DOM.btnBlack.addEventListener('click', async () => {
+  if (!await ensureLiveActionAllowed('Cut to black')) return;
+  await api('/api/system/black', { method: 'POST' });
+});
 DOM.btnRefreshMedia.addEventListener('click', refresh);
 DOM.btnToggleLogs.addEventListener('click', () => setLogsVisible(!state.logsVisible));
 DOM.btnOpenSettings.addEventListener('click', openSettingsModal);
+DOM.btnToggleSafeMode.addEventListener('click', async () => {
+  const enabled = !Boolean(state.snapshot?.safety?.safe_mode_enabled);
+  await api('/api/system/safe-mode', {
+    method: 'POST',
+    body: JSON.stringify({ enabled })
+  });
+});
+DOM.btnArmLive.addEventListener('click', async () => {
+  await api('/api/system/arm-controls', {
+    method: 'POST',
+    body: JSON.stringify({ seconds: 12 })
+  });
+});
 DOM.btnRunUpdate.addEventListener('click', async () => {
+  if (!await ensureLiveActionAllowed('System update')) return;
   const confirmed = await requestConfirm({
     title: 'Update DeckPilot',
     message: 'DeckPilot will pull the latest version and restart automatically if needed. Continue?',
@@ -782,9 +925,17 @@ DOM.btnRunUpdate.addEventListener('click', async () => {
   }
 });
 DOM.configFormat.addEventListener('change', async (e) => {
+  if (!await ensureLiveActionAllowed('Video format change')) {
+    DOM.configFormat.value = state.snapshot?.transport?.video_format || DOM.configFormat.value;
+    return;
+  }
   await api('/api/system/video-format', { method: 'POST', body: JSON.stringify({ video_format: e.target.value }) });
 });
 DOM.configOutput.addEventListener('change', async (e) => {
+  if (!await ensureLiveActionAllowed('Video output change')) {
+    renderOutputs(state.snapshot?.outputs || []);
+    return;
+  }
   await api('/api/system/output', { method: 'POST', body: JSON.stringify({ output_id: e.target.value }) });
 });
 DOM.configVolume.addEventListener('input', async (e) => {
@@ -886,6 +1037,12 @@ DOM.btnActivatePlaylist.addEventListener('click', async () => {
 DOM.btnPlayPlaylist.addEventListener('click', async () => {
   await playPlaylist();
 });
+DOM.btnPlayPlaylistFrom.addEventListener('click', async () => {
+  await playPlaylistFromSelection();
+});
+DOM.btnNextPlaylist.addEventListener('click', async () => {
+  await playNextPlaylistSelection();
+});
 DOM.btnLoopPlaylist.addEventListener('click', async () => {
   const enabled = !Boolean(state.snapshot?.transport?.playlist_loop);
   await api('/api/playlists/loop', {
@@ -894,6 +1051,9 @@ DOM.btnLoopPlaylist.addEventListener('click', async () => {
   });
 });
 DOM.btnAddSelectedPlaylist.addEventListener('click', async () => addSelectedClipToPlaylist());
+DOM.btnClearPlaylist.addEventListener('click', async () => {
+  await clearCurrentPlaylist();
+});
 DOM.appDialogBackdrop.addEventListener('click', (event) => {
   if (event.target === DOM.appDialogBackdrop) {
     closeAppDialog(null);
@@ -947,6 +1107,8 @@ function setupWebSocket() {
     if (message.type === 'audio') state.snapshot.audio = message.payload;
     if (message.type === 'playlist') state.snapshot.playlist = message.payload;
     if (message.type === 'outputs') state.snapshot.outputs = message.payload.outputs;
+    if (message.type === 'health') state.snapshot.health = message.payload;
+    if (message.type === 'safety') state.snapshot.safety = message.payload;
     if (message.type === 'log') {
       state.snapshot.logs = [...(state.snapshot.logs || []), message.payload].slice(-200);
     }

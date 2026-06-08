@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections import deque
 from typing import Any, Dict, List
 
@@ -15,6 +16,8 @@ class AppState:
         self.remote_enabled = True
         self.preview_enabled = False
         self.playrange_clip_id: int | None = None
+        self.safe_mode_enabled = True
+        self.live_controls_armed_until = 0.0
         self.connected_controllers: dict[str, ConnectionInfo] = {}
         self.logs = deque(maxlen=config.log_buffer_size)
         self._subscribers: set[asyncio.Queue] = set()
@@ -52,6 +55,27 @@ class AppState:
     async def set_remote_enabled(self, enabled: bool) -> None:
         self.remote_enabled = enabled
         await self.publish("remote", {"enabled": enabled})
+
+    async def set_safe_mode(self, enabled: bool) -> None:
+        self.safe_mode_enabled = enabled
+        if not enabled:
+            self.live_controls_armed_until = 0.0
+        await self.publish("safety", self.safety_snapshot())
+
+    async def arm_live_controls(self, seconds: int = 10) -> None:
+        self.live_controls_armed_until = time.monotonic() + max(1, seconds)
+        await self.publish("safety", self.safety_snapshot())
+
+    def live_controls_armed(self) -> bool:
+        return time.monotonic() < self.live_controls_armed_until
+
+    def safety_snapshot(self) -> Dict[str, Any]:
+        remaining = max(0, int(self.live_controls_armed_until - time.monotonic()))
+        return {
+            "safe_mode_enabled": self.safe_mode_enabled,
+            "live_controls_armed": self.live_controls_armed(),
+            "armed_seconds_remaining": remaining,
+        }
 
     async def add_controller(self, key: str, host: str, port: int) -> None:
         async with self._lock:

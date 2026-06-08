@@ -18,6 +18,7 @@ class MPVController:
         self._request_id = 0
         self._selected_output_id: str | None = None
         self._current_video_format: str = config.default_video_format
+        self.last_error: str | None = None
 
     async def start(self) -> None:
         socket_path = Path(self.config.mpv_socket_path)
@@ -45,6 +46,9 @@ class MPVController:
             await asyncio.sleep(0.25)
         if socket_path.exists():
             self._reader, self._writer = await asyncio.open_unix_connection(self.config.mpv_socket_path)
+            self.last_error = None
+            return
+        self.last_error = f'mpv IPC socket was not created at {self.config.mpv_socket_path}'
 
     async def stop_process(self) -> None:
         if self._writer:
@@ -58,23 +62,40 @@ class MPVController:
         self.process = None
 
     async def is_available(self) -> bool:
-        return self._writer is not None and not self._writer.is_closing()
+        return (
+            self.process is not None
+            and self.process.returncode is None
+            and self._writer is not None
+            and not self._writer.is_closing()
+        )
 
     async def command(self, command: list[Any]) -> dict[str, Any] | None:
         if not await self.is_available():
+            self.last_error = 'mpv is not available'
             return None
         self._request_id += 1
         payload = json.dumps({'command': command, 'request_id': self._request_id}).encode('utf-8') + b'\n'
         assert self._writer is not None
-        self._writer.write(payload)
-        await self._writer.drain()
-        assert self._reader is not None
-        response = await self._reader.readline()
-        if not response:
+        try:
+            self._writer.write(payload)
+            await self._writer.drain()
+            assert self._reader is not None
+            response = await self._reader.readline()
+        except (ConnectionError, BrokenPipeError, json.JSONDecodeError, OSError) as exc:
+            self.last_error = str(exc)
             return None
-        return json.loads(response.decode('utf-8'))
+        if not response:
+            self.last_error = 'mpv IPC returned an empty response'
+            return None
+        parsed = json.loads(response.decode('utf-8'))
+        self.last_error = None if parsed.get('error') == 'success' else str(parsed.get('error') or 'unknown mpv error')
+        return parsed
 
-    async def play_file(self, path: str, loop: bool = False, is_vertical: bool = False) -> None:
+    async def _command_ok(self, command: list[Any]) -> bool:
+        response = await self.command(command)
+        return bool(response and response.get('error') == 'success')
+
+    async def play_file(self, path: str, loop: bool = False, is_vertical: bool = False) -> bool:
         width, height = _target_dimensions(self._current_video_format)
         if is_vertical:
             lavfi = (
@@ -84,24 +105,28 @@ class MPVController:
                 f"[main]scale={width}:{height}:force_original_aspect_ratio=decrease[fg];"
                 f"[bg2][fg]overlay=(W-w)/2:(H-h)/2]"
             )
-            await self.command(['set_property', 'vf', lavfi])
+            if not await self._command_ok(['set_property', 'vf', lavfi]):
+                return False
         else:
-            await self.command(['set_property', 'vf', ''])
-        await self.command(['set_property', 'loop-file', 'inf' if loop else 'no'])
-        await self.command(['loadfile', path, 'replace'])
-        await self.command(['set_property', 'pause', False])
+            if not await self._command_ok(['set_property', 'vf', '']):
+                return False
+        if not await self._command_ok(['set_property', 'loop-file', 'inf' if loop else 'no']):
+            return False
+        if not await self._command_ok(['loadfile', path, 'replace']):
+            return False
+        return await self._command_ok(['set_property', 'pause', False])
 
-    async def stop(self) -> None:
-        await self.command(['stop'])
+    async def stop(self) -> bool:
+        return await self._command_ok(['stop'])
 
-    async def pause(self, enabled: bool = True) -> None:
-        await self.command(['set_property', 'pause', enabled])
+    async def pause(self, enabled: bool = True) -> bool:
+        return await self._command_ok(['set_property', 'pause', enabled])
 
-    async def set_volume(self, value: int) -> None:
-        await self.command(['set_property', 'volume', value])
+    async def set_volume(self, value: int) -> bool:
+        return await self._command_ok(['set_property', 'volume', value])
 
-    async def set_mute(self, enabled: bool) -> None:
-        await self.command(['set_property', 'mute', enabled])
+    async def set_mute(self, enabled: bool) -> bool:
+        return await self._command_ok(['set_property', 'mute', enabled])
 
     async def set_output(self, output_id: str) -> None:
         if output_id == self._selected_output_id:

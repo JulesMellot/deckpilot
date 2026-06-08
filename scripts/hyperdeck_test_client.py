@@ -8,10 +8,18 @@ HOST = sys.argv[1] if len(sys.argv) > 1 else '127.0.0.1'
 PORT = int(sys.argv[2]) if len(sys.argv) > 2 else 9993
 COMMANDS = [
     'device info',
+    'configuration',
     'clips get',
+    'slot info',
+    'slot select: slot id: 1',
+    'remote info',
+    'preview info',
+    'notify: transport: true slot: true clips: true',
     'transport info',
     'goto: clip id: 1',
+    'playrange set: clip id: 1',
     'play: single clip: true',
+    'playrange clear',
     'stop',
     'quit',
 ]

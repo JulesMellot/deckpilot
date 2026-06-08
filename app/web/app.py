@@ -66,8 +66,21 @@ class PlaylistPlayRequest(BaseModel):
     loop: bool = False
 
 
+class PlaylistPositionRequest(BaseModel):
+    position: int
+    loop: bool | None = None
+
+
 class UpdateTriggerRequest(BaseModel):
     confirm: bool = True
+
+
+class SafeModeRequest(BaseModel):
+    enabled: bool
+
+
+class ArmControlsRequest(BaseModel):
+    seconds: int = 10
 
 
 def build_app(
@@ -145,6 +158,27 @@ def build_app(
         ok_flag = await controller.play_playlist(loop=payload.loop)
         return {'ok': ok_flag}
 
+    @app.post('/api/playlists/{playlist_id}/play-from')
+    async def play_playlist_from_position(playlist_id: int, payload: PlaylistPositionRequest) -> dict[str, Any]:
+        active = await playlist_store.get_active_playlist()
+        if active.get('playlist', {}).get('id') != playlist_id:
+            await playlist_store.activate_playlist(playlist_id)
+        ok_flag = await controller.play_playlist_from_position(payload.position, loop=payload.loop)
+        return {'ok': ok_flag}
+
+    @app.post('/api/playlists/{playlist_id}/next')
+    async def play_next_playlist_item(playlist_id: int) -> dict[str, Any]:
+        active = await playlist_store.get_active_playlist()
+        if active.get('playlist', {}).get('id') != playlist_id:
+            await playlist_store.activate_playlist(playlist_id)
+        ok_flag = await controller.play_next_playlist_item()
+        return {'ok': ok_flag}
+
+    @app.delete('/api/playlists/{playlist_id}/items')
+    async def clear_playlist(playlist_id: int) -> dict[str, Any]:
+        await playlist_store.clear_playlist(playlist_id)
+        return {'ok': True, 'active': await playlist_store.get_active_playlist()}
+
     @app.post('/api/playlists/loop')
     async def set_playlist_loop(payload: LoopRequest) -> dict[str, Any]:
         await controller.set_playlist_loop(payload.enabled)
@@ -166,6 +200,16 @@ def build_app(
             return await update_manager.trigger_update()
         except RuntimeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post('/api/system/safe-mode')
+    async def set_safe_mode(payload: SafeModeRequest) -> dict[str, Any]:
+        await state.set_safe_mode(payload.enabled)
+        return {'ok': True, 'safety': state.safety_snapshot()}
+
+    @app.post('/api/system/arm-controls')
+    async def arm_controls(payload: ArmControlsRequest) -> dict[str, Any]:
+        await state.arm_live_controls(payload.seconds)
+        return {'ok': True, 'safety': state.safety_snapshot()}
 
     @app.post('/api/upload')
     async def upload(files: list[UploadFile] = File(...)) -> dict[str, Any]:
@@ -190,7 +234,11 @@ def build_app(
     async def play_clip(deck_id: int) -> dict[str, Any]:
         ok_flag = await controller.play_single_clip(deck_id)
         if not ok_flag:
-            raise HTTPException(status_code=404, detail='Clip not found')
+            clip = await clip_store.get_clip(deck_id)
+            if not clip:
+                raise HTTPException(status_code=404, detail='Clip not found')
+            detail = controller.player.last_error or controller._last_error or 'Playback unavailable'
+            raise HTTPException(status_code=503, detail=detail)
         return {'ok': True}
 
     @app.post('/api/transport/stop')

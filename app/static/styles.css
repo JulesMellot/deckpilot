@@ -566,6 +566,70 @@ header { grid-area: header; }
   overflow: hidden;
 }
 
+.preview-marks {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.preview-marks[hidden] {
+  display: none;
+}
+
+.preview-marks-track {
+  position: relative;
+  height: 10px;
+  background: var(--bg-element);
+  border: 1px solid var(--border-dim);
+  border-radius: 5px;
+}
+
+.preview-marks-range {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(0, 122, 204, 0.18);
+}
+
+.preview-marks-range.is-active {
+  background: rgba(0, 122, 204, 0.32);
+}
+
+.preview-marks-track .scrub-mark {
+  top: -5px;
+  height: 20px;
+}
+
+.preview-marks-playhead {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  left: 0;
+  width: 2px;
+  background: var(--text-main);
+  transform: translateX(-1px);
+  pointer-events: none;
+}
+
+.preview-marks-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.preview-marks-controls .mark-btn {
+  justify-content: center;
+  white-space: nowrap;
+}
+
+.preview-marks-readout {
+  display: flex;
+  gap: 0.4rem;
+  margin-left: auto;
+  flex-wrap: wrap;
+}
+
 .preview-video,
 .preview-image {
   position: absolute;

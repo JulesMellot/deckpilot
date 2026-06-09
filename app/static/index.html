@@ -294,6 +294,24 @@
         <img id="preview-image" class="preview-image" alt="" hidden>
         <video id="preview-video" class="preview-video" controls preload="metadata"></video>
       </div>
+      <div class="preview-marks" id="preview-marks">
+        <div class="preview-marks-track" id="preview-marks-track">
+          <div class="preview-marks-range" id="preview-marks-range"></div>
+          <div class="scrub-mark scrub-mark-in" id="preview-mark-in-tick" hidden></div>
+          <div class="scrub-mark scrub-mark-out" id="preview-mark-out-tick" hidden></div>
+          <div class="preview-marks-playhead" id="preview-marks-playhead"></div>
+        </div>
+        <div class="preview-marks-controls">
+          <button id="btn-preview-mark-in" class="action-btn mark-btn mark-btn-in" type="button" title="Set the in point at the current preview position">SET IN</button>
+          <button id="btn-preview-mark-out" class="action-btn mark-btn mark-btn-out" type="button" title="Set the out point at the current preview position">SET OUT</button>
+          <button id="btn-preview-mark-clear" class="action-btn mark-btn" type="button" title="Clear the in and out marks">CLEAR</button>
+          <div class="preview-marks-readout">
+            <span class="transport-mark-chip"><span class="transport-mark-key">IN</span><span id="preview-mark-in-value">--</span></span>
+            <span class="transport-mark-chip"><span class="transport-mark-key">OUT</span><span id="preview-mark-out-value">--</span></span>
+            <span class="transport-mark-chip transport-mark-chip-trim"><span class="transport-mark-key">CLIP</span><span id="preview-mark-trim-value">--</span></span>
+          </div>
+        </div>
+      </div>
       <div class="preview-actions">
         <button id="btn-preview-play" class="action-btn">PLAY OUT</button>
         <button id="btn-preview-cue" class="action-btn">CUE</button>

@@ -96,6 +96,17 @@ const DOM = {
   btnPreviewPlay: document.getElementById('btn-preview-play'),
   btnPreviewCue: document.getElementById('btn-preview-cue'),
   btnPreviewAddPlaylist: document.getElementById('btn-preview-add-playlist'),
+  previewMarks: document.getElementById('preview-marks'),
+  previewMarksRange: document.getElementById('preview-marks-range'),
+  previewMarkInTick: document.getElementById('preview-mark-in-tick'),
+  previewMarkOutTick: document.getElementById('preview-mark-out-tick'),
+  previewMarksPlayhead: document.getElementById('preview-marks-playhead'),
+  btnPreviewMarkIn: document.getElementById('btn-preview-mark-in'),
+  btnPreviewMarkOut: document.getElementById('btn-preview-mark-out'),
+  btnPreviewMarkClear: document.getElementById('btn-preview-mark-clear'),
+  previewMarkInValue: document.getElementById('preview-mark-in-value'),
+  previewMarkOutValue: document.getElementById('preview-mark-out-value'),
+  previewMarkTrimValue: document.getElementById('preview-mark-trim-value'),
   playlistSelect: document.getElementById('playlist-select'),
   playlistCount: document.getElementById('playlist-count'),
   playlistItems: document.getElementById('playlist-items'),
@@ -1504,6 +1515,68 @@ function renderPreview() {
     DOM.previewVideo.src = nextSrc;
     DOM.previewVideo.load();
   }
+  renderPreviewMarks();
+}
+
+function previewMarkDuration(clip) {
+  return Math.max(0, Number(clip?.duration_seconds || DOM.previewVideo.duration || 0));
+}
+
+function renderPreviewMarks() {
+  const clip = getSelectedClip();
+  const isVideo = Boolean(clip && clip.media_kind === 'video');
+  DOM.previewMarks.hidden = !isVideo;
+  if (!isVideo) return;
+  const duration = previewMarkDuration(clip);
+  const markIn = Math.max(0, Number(clip.mark_in_seconds || 0));
+  const rawOut = Math.max(0, Number(clip.mark_out_seconds || 0));
+  const markOut = rawOut > 0 ? Math.min(rawOut, duration) : 0;
+  const pct = (value) => (duration > 0 ? Math.min(100, Math.max(0, (value / duration) * 100)) : 0);
+  const trimActive = markIn > 0 || markOut > 0;
+
+  DOM.previewMarkInTick.hidden = !(markIn > 0);
+  if (markIn > 0) DOM.previewMarkInTick.style.left = `${pct(markIn)}%`;
+  DOM.previewMarkOutTick.hidden = !(markOut > 0);
+  if (markOut > 0) DOM.previewMarkOutTick.style.left = `${pct(markOut)}%`;
+
+  const rangeStart = pct(markIn);
+  const rangeEnd = markOut > 0 ? pct(markOut) : 100;
+  DOM.previewMarksRange.style.left = `${rangeStart}%`;
+  DOM.previewMarksRange.style.width = `${Math.max(0, rangeEnd - rangeStart)}%`;
+  DOM.previewMarksRange.classList.toggle('is-active', trimActive);
+
+  DOM.previewMarkInValue.textContent = markIn > 0 ? formatClock(markIn) : '--';
+  DOM.previewMarkOutValue.textContent = markOut > 0 ? formatClock(markOut) : '--';
+  const effectiveOut = markOut > 0 ? markOut : duration;
+  DOM.previewMarkTrimValue.textContent = trimActive ? formatClock(Math.max(0, effectiveOut - markIn)) : '--';
+  DOM.previewMarkTrimValue.parentElement.classList.toggle('is-active', trimActive);
+  DOM.btnPreviewMarkClear.disabled = !trimActive;
+  updatePreviewPlayhead();
+}
+
+function updatePreviewPlayhead() {
+  const clip = getSelectedClip();
+  if (!clip || clip.media_kind !== 'video') return;
+  const duration = previewMarkDuration(clip);
+  const current = Number(DOM.previewVideo.currentTime || 0);
+  const pct = duration > 0 ? Math.min(100, Math.max(0, (current / duration) * 100)) : 0;
+  DOM.previewMarksPlayhead.style.left = `${pct}%`;
+}
+
+async function commitPreviewMark(kind) {
+  const clip = getSelectedClip();
+  if (!clip || clip.media_kind !== 'video') return;
+  const duration = previewMarkDuration(clip);
+  const position = Math.max(0, Math.min(Number(DOM.previewVideo.currentTime || 0), duration));
+  let body;
+  if (kind === 'in') body = { mark_in_seconds: position };
+  else if (kind === 'out') body = { mark_out_seconds: position };
+  else body = { mark_in_seconds: 0, mark_out_seconds: 0 };
+  await api(`/api/clips/${clip.deck_id}/marks`, { method: 'PATCH', body: JSON.stringify(body) });
+  if (kind === 'in') clip.mark_in_seconds = position;
+  else if (kind === 'out') clip.mark_out_seconds = position;
+  else { clip.mark_in_seconds = 0; clip.mark_out_seconds = 0; }
+  renderPreviewMarks();
 }
 
 function renderMediaGrid(clips, activeClipId, status) {
@@ -1922,6 +1995,11 @@ bindAsync(DOM.btnPreviewCue, 'click', async () => {
   await cueClip(clip.deck_id);
 }, 'Preview Error');
 bindAsync(DOM.btnPreviewAddPlaylist, 'click', async () => addSelectedClipToPlaylist(), 'Playlist Error');
+bindAsync(DOM.btnPreviewMarkIn, 'click', async () => commitPreviewMark('in'), 'Marks Error');
+bindAsync(DOM.btnPreviewMarkOut, 'click', async () => commitPreviewMark('out'), 'Marks Error');
+bindAsync(DOM.btnPreviewMarkClear, 'click', async () => commitPreviewMark('clear'), 'Marks Error');
+DOM.previewVideo.addEventListener('timeupdate', updatePreviewPlayhead);
+DOM.previewVideo.addEventListener('loadedmetadata', renderPreviewMarks);
 bindAsync(DOM.btnNewPlaylist, 'click', async () => {
   const name = await requestText({
     title: 'New Playlist',

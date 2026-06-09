@@ -20,6 +20,9 @@ DeckPilot provides:
 - web upload for video clips
 - streamed uploads to reduce memory pressure on large imports
 - play, stop, pause, cue, and cut-to-black controls
+- live timeline scrubbing with a seek slider and ±10s nudge controls
+- per-clip in/out marks to trim the playable region, applied on cue and play
+- mark-aware remaining time that counts down to the out mark
 - improved cue/play reliability with warm `mpv` reuse
 - loop handling synchronized between app state and `mpv`
 - persistent playlists with playback and loop mode
@@ -155,6 +158,8 @@ It is already usable for testing and real-world validation, but it should still 
 ### Recently Delivered
 
 - playback reliability improvements for cue, play resume, loop propagation, and warm `mpv` stop behavior
+- live transport scrubbing with a seek slider, ±10s nudge, and mpv `time-pos` seeking
+- per-clip in/out marks with mark-aware remaining time, applied on cue, play, and loop
 - incremental WebSocket-driven UI updates with reduced full rerenders
 - event delegation, DOM node reuse, and light virtualization for large media and playlist views
 - cache-friendly thumbnail versioning and lighter thumbnail delivery

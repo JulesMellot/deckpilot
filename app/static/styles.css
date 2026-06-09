@@ -266,6 +266,130 @@ header { grid-area: header; }
   background-color: var(--color-accent);
 }
 
+.transport-scrub {
+  margin-top: 0.9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.transport-scrub-times {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-family: var(--font-mono);
+}
+
+.transport-scrub-label,
+.transport-scrub-separator {
+  font-size: 0.72rem;
+  color: var(--text-dim);
+}
+
+.transport-scrub-value {
+  font-size: 0.9rem;
+  color: var(--text-main);
+}
+
+.transport-scrub-slider-wrap {
+  position: relative;
+}
+
+.transport-scrub-slider {
+  width: 100%;
+  accent-color: var(--color-accent);
+  position: relative;
+  z-index: 1;
+}
+
+.transport-scrub-slider:disabled {
+  opacity: 0.45;
+}
+
+.transport-scrub-marks {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.scrub-mark {
+  position: absolute;
+  top: -9px;
+  width: 2px;
+  height: 18px;
+  transform: translateX(-1px);
+  border-radius: 1px;
+}
+
+.scrub-mark-in {
+  background-color: var(--color-ready);
+  box-shadow: 0 0 4px var(--color-ready);
+}
+
+.scrub-mark-out {
+  background-color: var(--color-live);
+  box-shadow: 0 0 4px var(--color-live);
+}
+
+.transport-scrub-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.transport-scrub-actions .action-btn {
+  flex: 1;
+  justify-content: center;
+}
+
+.transport-marks {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.transport-marks-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.transport-marks-actions .action-btn {
+  flex: 1;
+  justify-content: center;
+}
+
+.transport-marks-readout {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.transport-mark-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.5rem;
+  border: 1px solid var(--border-dim);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--text-main);
+}
+
+.transport-mark-key {
+  font-size: 0.65rem;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+}
+
+.transport-mark-chip-trim.is-active {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
 .hardware-controls {
   padding: 1.5rem 1rem;
   display: flex;

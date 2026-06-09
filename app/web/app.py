@@ -40,6 +40,15 @@ class MuteRequest(BaseModel):
     muted: bool
 
 
+class SeekRequest(BaseModel):
+    seconds: float
+
+
+class MarksRequest(BaseModel):
+    mark_in_seconds: float | None = None
+    mark_out_seconds: float | None = None
+
+
 class OutputSelectionRequest(BaseModel):
     output_id: str
 
@@ -280,6 +289,21 @@ def build_app(
     @app.post('/api/transport/resume')
     async def resume_clip() -> dict[str, Any]:
         await controller.resume()
+        return {'ok': True}
+
+    @app.post('/api/transport/seek')
+    async def seek_clip(payload: SeekRequest) -> dict[str, Any]:
+        ok_flag = await controller.seek_current_clip(payload.seconds)
+        if not ok_flag:
+            detail = controller.player.last_error or controller._last_error or 'Seek unavailable'
+            raise HTTPException(status_code=503, detail=detail)
+        return {'ok': True}
+
+    @app.patch('/api/clips/{deck_id}/marks')
+    async def set_clip_marks(deck_id: int, payload: MarksRequest) -> dict[str, Any]:
+        ok_flag = await controller.set_clip_marks(deck_id, payload.mark_in_seconds, payload.mark_out_seconds)
+        if not ok_flag:
+            raise HTTPException(status_code=400, detail=controller._last_error or 'Unable to set marks')
         return {'ok': True}
 
     @app.patch('/api/clips/{deck_id}/rename')

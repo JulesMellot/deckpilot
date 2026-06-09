@@ -21,6 +21,8 @@ const state = {
   pendingVolume: null,
   uploadHideTimer: null,
   uploadProcessingActive: false,
+  transportSeekValue: null,
+  transportSeekDragging: false,
   mediaRenderLimit: 0,
   mediaVirtualEnabled: false,
   mediaVirtualKey: null,
@@ -51,6 +53,19 @@ const DOM = {
   liveRemaining: document.getElementById('live-remaining'),
   liveDuration: document.getElementById('live-duration'),
   liveProgress: document.getElementById('live-progress'),
+  liveScrubCurrent: document.getElementById('live-scrub-current'),
+  liveScrubTotal: document.getElementById('live-scrub-total'),
+  transportSeek: document.getElementById('transport-seek'),
+  btnSeekBack: document.getElementById('btn-seek-back'),
+  btnSeekForward: document.getElementById('btn-seek-forward'),
+  scrubMarkIn: document.getElementById('scrub-mark-in'),
+  scrubMarkOut: document.getElementById('scrub-mark-out'),
+  btnMarkIn: document.getElementById('btn-mark-in'),
+  btnMarkOut: document.getElementById('btn-mark-out'),
+  btnMarkClear: document.getElementById('btn-mark-clear'),
+  markInValue: document.getElementById('mark-in-value'),
+  markOutValue: document.getElementById('mark-out-value'),
+  markTrimValue: document.getElementById('mark-trim-value'),
   btnPrev: document.getElementById('btn-prev'),
   btnStop: document.getElementById('btn-stop'),
   btnPlay: document.getElementById('btn-play'),
@@ -648,6 +663,22 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+DOM.transportSeek.addEventListener('input', (event) => {
+  state.transportSeekDragging = true;
+  state.transportSeekValue = Number(event.target.value || 0);
+  if (state.snapshot?.transport) {
+    renderTransport(state.snapshot.transport, state.snapshot.clips || []);
+  }
+});
+
+bindAsync(DOM.transportSeek, 'change', async (event) => {
+  await commitTransportSeek(Number(event.target.value || 0));
+}, 'Playback Error');
+
+DOM.transportSeek.addEventListener('pointerup', () => {
+  DOM.transportSeek.blur();
+});
+
 function getSelectedClip() {
   return state.clipIndex.get(state.selectedClipId) || null;
 }
@@ -686,6 +717,66 @@ async function playAdjacentClip(direction) {
   if (targetIndex < 0) targetIndex = clips.length - 1;
   if (targetIndex >= clips.length) targetIndex = 0;
   await api(`/api/clips/${clips[targetIndex].deck_id}/play`, { method: 'POST' });
+}
+
+function canSeekCurrentTransport(transport, clip) {
+  return Boolean(transport?.clip_id && clip && clip.media_kind === 'video' && Number(transport.total_seconds) > 0);
+}
+
+function displayedTransportElapsed(transport) {
+  if (state.transportSeekDragging && state.transportSeekValue !== null) {
+    const max = Math.max(0, Number(transport?.total_seconds || 0));
+    return Math.min(max, Math.max(0, Number(state.transportSeekValue || 0)));
+  }
+  return Math.max(0, Number(transport?.elapsed_seconds || 0));
+}
+
+async function commitTransportSeek(seconds) {
+  if (!state.snapshot?.transport) return;
+  const transport = state.snapshot.transport;
+  const clip = state.clipIndex.get(transport.clip_id) || null;
+  if (!canSeekCurrentTransport(transport, clip)) return;
+  const clamped = Math.min(Math.max(0, Number(seconds || 0)), Number(transport.total_seconds || 0));
+  state.transportSeekDragging = false;
+  state.transportSeekValue = clamped;
+  try {
+    await api('/api/transport/seek', {
+      method: 'POST',
+      body: JSON.stringify({ seconds: clamped }),
+    });
+  } catch (error) {
+    state.transportSeekValue = null;
+    throw error;
+  } finally {
+    state.transportSeekDragging = false;
+  }
+}
+
+async function nudgeTransport(deltaSeconds) {
+  if (!state.snapshot?.transport) return;
+  const transport = state.snapshot.transport;
+  const base = displayedTransportElapsed(transport);
+  await commitTransportSeek(base + deltaSeconds);
+}
+
+function effectiveOutSeconds(transport) {
+  const total = Math.max(0, Number(transport?.total_seconds || 0));
+  const markOut = Number(transport?.mark_out_seconds || 0);
+  return markOut > 0 ? Math.min(markOut, total) : total;
+}
+
+async function commitClipMarks({ markIn = null, markOut = null } = {}) {
+  if (!state.snapshot?.transport) return;
+  const transport = state.snapshot.transport;
+  const clip = state.clipIndex.get(transport.clip_id) || null;
+  if (!canSeekCurrentTransport(transport, clip)) return;
+  const body = {};
+  if (markIn !== null) body.mark_in_seconds = Math.max(0, Number(markIn || 0));
+  if (markOut !== null) body.mark_out_seconds = Math.max(0, Number(markOut || 0));
+  await api(`/api/clips/${transport.clip_id}/marks`, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
 }
 
 function filteredClips() {
@@ -836,26 +927,45 @@ function renderConnectionStatus(connections) {
 function renderTransport(transport, clips) {
   if (!transport) return;
   DOM.liveFormat.textContent = transport.video_format;
+  if (!state.transportSeekDragging) {
+    state.transportSeekValue = null;
+  }
 
   const isPlaying = transport.status === 'play';
+  const currentClip = state.clipIndex.get(transport.clip_id) || (clips || []).find((clip) => clip.deck_id === transport.clip_id);
+  const canSeek = canSeekCurrentTransport(transport, currentClip);
+  const total = Math.max(0, Number(transport.total_seconds || 0));
+  const elapsed = displayedTransportElapsed(transport);
+  const markIn = Math.max(0, Number(transport.mark_in_seconds || 0));
+  const outPoint = effectiveOutSeconds(transport);
+  const remaining = Math.max(0, outPoint - elapsed);
+  const trimmedDuration = Math.max(0, outPoint - markIn);
+
   DOM.tallyBar.textContent = isPlaying ? 'ON AIR' : 'OFF AIR';
   DOM.tallyBar.className = `tally-indicator ${isPlaying ? 'live' : ''}`;
   DOM.iconPlay.style.display = isPlaying ? 'none' : 'block';
   DOM.iconPause.style.display = isPlaying ? 'block' : 'none';
   DOM.btnPlay.className = `hw-btn play-btn ${isPlaying ? 'active' : ''}`;
 
-  DOM.liveTimecode.textContent = formatRemainingClock(transport.remaining_seconds);
-  DOM.liveRemaining.textContent = formatClock(transport.remaining_seconds);
-  DOM.liveDuration.textContent = formatClock(transport.total_seconds);
-  const currentClip = state.clipIndex.get(transport.clip_id) || (clips || []).find((clip) => clip.deck_id === transport.clip_id);
+  DOM.liveTimecode.textContent = formatRemainingClock(remaining);
+  DOM.liveRemaining.textContent = formatClock(remaining);
+  DOM.liveDuration.textContent = formatClock(transport.trim_active ? trimmedDuration : total);
+  DOM.liveScrubCurrent.textContent = formatClock(elapsed);
+  DOM.liveScrubTotal.textContent = formatClock(total);
   DOM.liveClipName.textContent = currentClip ? currentClip.name : 'NO CLIP LOADED';
-  const progress = transport.total_seconds > 0 ? (transport.elapsed_seconds / transport.total_seconds) * 100 : 0;
+  const progress = total > 0 ? (elapsed / total) * 100 : 0;
   DOM.liveProgress.style.width = `${progress}%`;
+  DOM.transportSeek.max = String(total);
+  DOM.transportSeek.value = String(elapsed);
+  DOM.transportSeek.disabled = !canSeek;
+  DOM.btnSeekBack.disabled = !canSeek;
+  DOM.btnSeekForward.disabled = !canSeek;
+  renderTransportMarks(transport, canSeek, total);
   DOM.liveTimecode.classList.remove('warning', 'danger', 'blink');
   if (isPlaying && transport.total_seconds > 0) {
-    if (transport.remaining_seconds <= 5) {
+    if (remaining <= 5) {
       DOM.liveTimecode.classList.add('danger', 'blink');
-    } else if (transport.remaining_seconds <= 10) {
+    } else if (remaining <= 10) {
       DOM.liveTimecode.classList.add('warning', 'blink');
     }
   }
@@ -864,6 +974,27 @@ function renderTransport(transport, clips) {
   DOM.btnPlayPlaylist.classList.toggle('active', Boolean(transport.playlist_mode && transport.status === 'play'));
   DOM.btnLoopPlaylist.classList.toggle('active', Boolean(transport.playlist_loop));
   DOM.btnLoopPlaylist.textContent = transport.playlist_loop ? 'LOOP ON' : 'LOOP';
+}
+
+function renderTransportMarks(transport, canSeek, total) {
+  const markIn = Math.max(0, Number(transport.mark_in_seconds || 0));
+  const markOut = Math.max(0, Number(transport.mark_out_seconds || 0));
+  const positionPercent = (value) => (total > 0 ? Math.min(100, Math.max(0, (value / total) * 100)) : 0);
+
+  DOM.scrubMarkIn.hidden = !(markIn > 0 && total > 0);
+  if (!DOM.scrubMarkIn.hidden) DOM.scrubMarkIn.style.left = `${positionPercent(markIn)}%`;
+  DOM.scrubMarkOut.hidden = !(markOut > 0 && total > 0);
+  if (!DOM.scrubMarkOut.hidden) DOM.scrubMarkOut.style.left = `${positionPercent(markOut)}%`;
+
+  DOM.markInValue.textContent = markIn > 0 ? formatClock(markIn) : '--';
+  DOM.markOutValue.textContent = markOut > 0 ? formatClock(markOut) : '--';
+  const trimmed = Math.max(0, (markOut > 0 ? Math.min(markOut, total) : total) - markIn);
+  DOM.markTrimValue.textContent = transport.trim_active ? formatClock(trimmed) : '--';
+  DOM.markTrimValue.parentElement.classList.toggle('is-active', Boolean(transport.trim_active));
+
+  DOM.btnMarkIn.disabled = !canSeek;
+  DOM.btnMarkOut.disabled = !canSeek;
+  DOM.btnMarkClear.disabled = !canSeek || !transport.trim_active;
 }
 
 function renderAudio(audio) {
@@ -1498,6 +1629,21 @@ bindAsync(DOM.btnStop, 'click', async () => {
   if (!await ensureLiveActionAllowed('Stop playback')) return;
   await api('/api/transport/stop', { method: 'POST' });
 }, 'Playback Error');
+bindAsync(DOM.btnSeekBack, 'click', async () => {
+  await commitTransportSeek(displayedTransportElapsed(state.snapshot?.transport) - 10);
+}, 'Playback Error');
+bindAsync(DOM.btnSeekForward, 'click', async () => {
+  await commitTransportSeek(displayedTransportElapsed(state.snapshot?.transport) + 10);
+}, 'Playback Error');
+bindAsync(DOM.btnMarkIn, 'click', async () => {
+  await commitClipMarks({ markIn: displayedTransportElapsed(state.snapshot?.transport) });
+}, 'Marks Error');
+bindAsync(DOM.btnMarkOut, 'click', async () => {
+  await commitClipMarks({ markOut: displayedTransportElapsed(state.snapshot?.transport) });
+}, 'Marks Error');
+bindAsync(DOM.btnMarkClear, 'click', async () => {
+  await commitClipMarks({ markIn: 0, markOut: 0 });
+}, 'Marks Error');
 bindAsync(DOM.btnPrev, 'click', async () => playAdjacentClip(-1), 'Playback Error');
 bindAsync(DOM.btnNext, 'click', async () => playAdjacentClip(1), 'Playback Error');
 bindAsync(DOM.btnBlack, 'click', async () => {

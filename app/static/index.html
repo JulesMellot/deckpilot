@@ -66,6 +66,38 @@
         <div class="progress-track">
           <div class="progress-fill" id="live-progress"></div>
         </div>
+
+        <div class="transport-scrub">
+          <div class="transport-scrub-times">
+            <span class="transport-scrub-label">POSITION</span>
+            <span class="transport-scrub-value" id="live-scrub-current">00:00:00</span>
+            <span class="transport-scrub-separator">/</span>
+            <span class="transport-scrub-value" id="live-scrub-total">00:00:00</span>
+          </div>
+          <div class="transport-scrub-slider-wrap">
+            <div class="transport-scrub-marks" id="transport-scrub-marks">
+              <div class="scrub-mark scrub-mark-in" id="scrub-mark-in" hidden></div>
+              <div class="scrub-mark scrub-mark-out" id="scrub-mark-out" hidden></div>
+            </div>
+            <input type="range" id="transport-seek" class="transport-scrub-slider" min="0" max="0" step="0.04" value="0">
+          </div>
+          <div class="transport-scrub-actions">
+            <button id="btn-seek-back" class="action-btn" type="button">-10S</button>
+            <button id="btn-seek-forward" class="action-btn" type="button">+10S</button>
+          </div>
+          <div class="transport-marks">
+            <div class="transport-marks-actions">
+              <button id="btn-mark-in" class="action-btn" type="button" title="Set the in point at the current position">SET IN</button>
+              <button id="btn-mark-out" class="action-btn" type="button" title="Set the out point at the current position">SET OUT</button>
+              <button id="btn-mark-clear" class="action-btn" type="button" title="Clear the in and out marks">CLEAR</button>
+            </div>
+            <div class="transport-marks-readout" id="transport-marks-readout">
+              <span class="transport-mark-chip"><span class="transport-mark-key">IN</span><span id="mark-in-value">--</span></span>
+              <span class="transport-mark-chip"><span class="transport-mark-key">OUT</span><span id="mark-out-value">--</span></span>
+              <span class="transport-mark-chip transport-mark-chip-trim"><span class="transport-mark-key">CLIP</span><span id="mark-trim-value">--</span></span>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- Audio Mixer -->

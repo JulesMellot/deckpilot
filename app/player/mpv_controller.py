@@ -104,29 +104,41 @@ class MPVController:
         response = await self.command(command)
         return bool(response and response.get('error') == 'success')
 
-    async def play_file(self, path: str, loop: bool = False, is_vertical: bool = False) -> bool:
+    async def play_file(self, path: str, loop: bool = False, is_vertical: bool = False, start: float = 0.0) -> bool:
         if not await self._command_ok(['set_property', 'vf', '']):
+            return False
+        # Load paused so we can seek to the in-mark before the first frame is shown.
+        if not await self._command_ok(['set_property', 'pause', True]):
             return False
         if not await self._command_ok(['loadfile', path, 'replace']):
             return False
         if not await self.set_loop(loop):
             return False
+        if start > 0:
+            await self.seek_absolute(start)
         return await self._command_ok(['set_property', 'pause', False])
 
-    async def cue_file(self, path: str, loop: bool = False, is_vertical: bool = False) -> bool:
+    async def cue_file(self, path: str, loop: bool = False, is_vertical: bool = False, start: float = 0.0) -> bool:
         if not await self._command_ok(['set_property', 'vf', '']):
             return False
         if not await self._command_ok(['set_property', 'pause', True]):
             return False
         if not await self._command_ok(['loadfile', path, 'replace']):
             return False
-        return await self.set_loop(loop)
+        if not await self.set_loop(loop):
+            return False
+        if start > 0:
+            await self.seek_absolute(start)
+        return True
 
     async def stop(self) -> bool:
         return await self._command_ok(['stop'])
 
     async def pause(self, enabled: bool = True) -> bool:
         return await self._command_ok(['set_property', 'pause', enabled])
+
+    async def seek_absolute(self, seconds: float) -> bool:
+        return await self._command_ok(['set_property', 'time-pos', max(0.0, float(seconds))])
 
     async def set_loop(self, enabled: bool) -> bool:
         return await self._command_ok(['set_property', 'loop-file', 'inf' if enabled else 'no'])

@@ -24,6 +24,27 @@ class ClipRecord:
     processing_state: str = "ready"
     loop_enabled: bool = False
     is_builtin: bool = False
+    mark_in_seconds: float = 0.0
+    mark_out_seconds: float = 0.0
+
+    def trim_bounds(self) -> tuple[float, float]:
+        """Return the effective (in, out) playback window in absolute seconds.
+
+        ``mark_out_seconds`` of 0 (or out of range) means "play to the end".
+        Invalid windows (out <= in) fall back to the full clip duration.
+        """
+        duration = max(0.0, float(self.duration_seconds or 0.0))
+        start = max(0.0, min(float(self.mark_in_seconds or 0.0), duration))
+        end = float(self.mark_out_seconds or 0.0)
+        if end <= 0.0 or end > duration:
+            end = duration
+        if end <= start:
+            return 0.0, duration
+        return start, end
+
+    def has_marks(self) -> bool:
+        start, end = self.trim_bounds()
+        return start > 0.0 or end < max(0.0, float(self.duration_seconds or 0.0))
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -44,6 +65,9 @@ class TransportState:
     elapsed_seconds: float = 0.0
     remaining_seconds: float = 0.0
     total_seconds: float = 0.0
+    mark_in_seconds: float = 0.0
+    mark_out_seconds: float = 0.0
+    trim_active: bool = False
     playlist_mode: bool = False
     playlist_loop: bool = False
     playlist_position: int = 0

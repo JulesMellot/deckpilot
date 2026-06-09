@@ -113,26 +113,30 @@ class DeckController:
             await self._report_error('player', f'Player unavailable for cue: {self.player.last_error or "startup failed"}')
             await self._publish_health()
             return False
-        if not await self.player.cue_file(clip.filepath, loop=clip.loop_enabled, is_vertical=clip.is_vertical):
+        in_point, out_point = clip.trim_bounds()
+        if not await self.player.cue_file(clip.filepath, loop=clip.loop_enabled, is_vertical=clip.is_vertical, start=in_point):
             await self._report_error('player', f'Cue failed for "{clip.name}": {self.player.last_error or "unknown player error"}')
             await self._publish_health()
             return False
         self.current_clip_id = clip.deck_id
-        self._play_started_at = time.monotonic()
-        self._pause_started_at = self._play_started_at
+        now = time.monotonic()
+        self._play_started_at = now - in_point
+        self._pause_started_at = now
         self._accumulated_pause_seconds = 0.0
+        cue_timecode = seconds_to_timecode(in_point, clip.framerate)
         await self.state.set_transport(
             status='stopped',
             speed=0,
             clip_id=clip.deck_id,
-            timecode='00:00:00:00',
-            display_timecode='00:00:00:00',
+            timecode=cue_timecode,
+            display_timecode=cue_timecode,
             total_seconds=clip.duration_seconds,
-            remaining_seconds=clip.duration_seconds,
-            elapsed_seconds=0.0,
+            remaining_seconds=max(0.0, out_point - in_point),
+            elapsed_seconds=in_point,
             video_format=self.state.transport.video_format,
             loop=clip.loop_enabled,
             paused=True,
+            **self._mark_transport_fields(clip),
         )
         self._last_error = None
         self._last_error_key = None
@@ -194,10 +198,11 @@ class DeckController:
             self._last_error_key = None
             await self._publish_health()
             return True
-        started = await self._start_clip_playback(clip, use_loop)
+        in_point, out_point = clip.trim_bounds()
+        started = await self._start_clip_playback(clip, use_loop, start_seconds=in_point)
         if not started:
             return False
-        self._play_started_at = time.monotonic()
+        self._play_started_at = time.monotonic() - in_point
         self._pause_started_at = None
         self._accumulated_pause_seconds = 0.0
         await self.state.set_transport(
@@ -208,12 +213,15 @@ class DeckController:
             single_clip=bool(single_clip),
             paused=False,
             total_seconds=clip.duration_seconds,
-            remaining_seconds=clip.duration_seconds,
-            elapsed_seconds=0.0,
+            remaining_seconds=max(0.0, out_point - in_point),
+            elapsed_seconds=in_point,
+            timecode=seconds_to_timecode(in_point, clip.framerate),
+            display_timecode=seconds_to_timecode(in_point, clip.framerate),
             video_format=self.state.transport.video_format,
             playlist_mode=self._playlist_mode,
             playlist_loop=self._playlist_loop,
             playlist_position=await self._playlist_position_for_clip(clip.deck_id),
+            **self._mark_transport_fields(clip),
         )
         self._last_error = None
         self._last_error_key = None
@@ -238,6 +246,81 @@ class DeckController:
             self._accumulated_pause_seconds += time.monotonic() - self._pause_started_at
             self._pause_started_at = None
         await self.state.set_transport(status='play', paused=False, speed=100)
+
+    async def seek_current_clip(self, seconds: float) -> bool:
+        clip_id = self.current_clip_id or self.state.transport.clip_id
+        if not clip_id:
+            await self._report_error('playback', 'Cannot seek: no clip is currently loaded.')
+            await self._publish_health()
+            return False
+        clip = await self.clip_store.get_clip(clip_id)
+        if not clip:
+            await self._report_error('playback', f'Cannot seek clip {clip_id}: clip not found.')
+            await self._publish_health()
+            return False
+        if clip.media_kind != 'video':
+            await self._report_error('playback', f'Cannot seek "{clip.name}": timeline scrubbing is only available for video clips.')
+            await self._publish_health()
+            return False
+        if not await self.player.is_available():
+            await self._report_error('player', f'Seek failed for "{clip.name}": {self.player.last_error or "player unavailable"}')
+            await self._publish_health()
+            return False
+        target = max(0.0, min(float(seconds), float(clip.duration_seconds or 0.0)))
+        if not await self.player.seek_absolute(target):
+            await self._report_error('player', f'Seek failed for "{clip.name}": {self.player.last_error or "unknown player error"}')
+            await self._publish_health()
+            return False
+        self.current_clip_id = clip.deck_id
+        now = time.monotonic()
+        if self.state.transport.paused:
+            self._pause_started_at = self._pause_started_at or now
+            self._play_started_at = self._pause_started_at - target - self._accumulated_pause_seconds
+        else:
+            self._play_started_at = now - target - self._accumulated_pause_seconds
+            self._pause_started_at = None
+        await self._set_transport_position(clip, target)
+        self._last_error = None
+        self._last_error_key = None
+        await self._publish_health()
+        return True
+
+    async def set_clip_marks(
+        self,
+        deck_id: int,
+        mark_in: float | None = None,
+        mark_out: float | None = None,
+    ) -> bool:
+        clip = await self.clip_store.get_clip(deck_id)
+        if not clip:
+            await self._report_error('playback', f'Cannot set marks for clip {deck_id}: clip not found.')
+            await self._publish_health()
+            return False
+        if clip.media_kind != 'video':
+            await self._report_error('playback', f'Cannot set marks for "{clip.name}": marks are only available for video clips.')
+            await self._publish_health()
+            return False
+        duration = max(0.0, float(clip.duration_seconds or 0.0))
+        resolved_in = clip.mark_in_seconds if mark_in is None else max(0.0, min(float(mark_in), duration))
+        resolved_out = clip.mark_out_seconds if mark_out is None else max(0.0, min(float(mark_out), duration))
+        if resolved_out > 0 and resolved_in >= resolved_out:
+            await self._report_error('playback', f'Cannot set marks for "{clip.name}": the in point must come before the out point.')
+            await self._publish_health()
+            return False
+        await self.clip_store.set_marks(
+            deck_id,
+            None if mark_in is None else resolved_in,
+            None if mark_out is None else resolved_out,
+        )
+        await self.refresh_clips()
+        if self.current_clip_id == deck_id:
+            updated = await self.clip_store.get_clip(deck_id)
+            if updated:
+                await self._set_transport_position(updated, float(self.state.transport.elapsed_seconds or 0.0))
+        self._last_error = None
+        self._last_error_key = None
+        await self._publish_health()
+        return True
 
     async def stop_playback(self) -> None:
         if await self.player.is_available():
@@ -509,22 +592,17 @@ class DeckController:
                 elapsed = max(0.0, (self._pause_started_at - self._play_started_at) - self._accumulated_pause_seconds)
             else:
                 elapsed = max(0.0, (time.monotonic() - self._play_started_at) - self._accumulated_pause_seconds)
-            if not self.state.transport.loop and elapsed >= clip.duration_seconds and clip.duration_seconds > 0:
+            in_point, out_point = clip.trim_bounds()
+            if not self.state.transport.loop and out_point > 0 and elapsed >= out_point:
                 if self._playlist_mode:
                     await self.play_next_playlist_item()
                 else:
                     await self.stop_playback()
                 continue
-            if self.state.transport.loop and clip.duration_seconds > 0:
-                elapsed = elapsed % clip.duration_seconds
-            remaining = max(0.0, clip.duration_seconds - elapsed)
-            await self.state.set_transport(
-                elapsed_seconds=elapsed,
-                remaining_seconds=remaining,
-                total_seconds=clip.duration_seconds,
-                timecode=seconds_to_timecode(elapsed, clip.framerate),
-                display_timecode=seconds_to_timecode(elapsed, clip.framerate),
-            )
+            window = out_point - in_point
+            if self.state.transport.loop and window > 0:
+                elapsed = in_point + ((elapsed - in_point) % window)
+            await self._set_transport_position(clip, elapsed)
 
     async def _health_reporter(self) -> None:
         while True:
@@ -540,6 +618,29 @@ class DeckController:
         if not callable(processing_method):
             return {'pending': 0, 'processing': 0, 'error': 0, 'ready': 0, 'queued': 0}
         return await processing_method()
+
+    async def _set_transport_position(self, clip, elapsed: float) -> None:
+        elapsed = max(0.0, min(float(elapsed), float(clip.duration_seconds or 0.0)))
+        _in_point, out_point = clip.trim_bounds()
+        remaining = max(0.0, out_point - elapsed)
+        timecode = seconds_to_timecode(elapsed, clip.framerate)
+        await self.state.set_transport(
+            elapsed_seconds=elapsed,
+            remaining_seconds=remaining,
+            total_seconds=clip.duration_seconds,
+            timecode=timecode,
+            display_timecode=timecode,
+            **self._mark_transport_fields(clip),
+        )
+
+    def _mark_transport_fields(self, clip) -> Dict[str, Any]:
+        in_point, out_point = clip.trim_bounds()
+        duration = max(0.0, float(clip.duration_seconds or 0.0))
+        return {
+            'mark_in_seconds': in_point if in_point > 0 else 0.0,
+            'mark_out_seconds': out_point if out_point < duration else 0.0,
+            'trim_active': clip.has_marks(),
+        }
 
     async def _apply_output_geometry(self, selected_output) -> None:
         width, height = self._canvas_dimensions(selected_output)
@@ -565,19 +666,19 @@ class DeckController:
                 values.append(common)
         return values
 
-    async def _start_clip_playback(self, clip, use_loop: bool) -> bool:
+    async def _start_clip_playback(self, clip, use_loop: bool, start_seconds: float = 0.0) -> bool:
         if not await self._ensure_player_ready():
             await self._report_error('player', f'Player unavailable: {self.player.last_error or "startup failed"}')
             await self._publish_health()
             return False
-        started = await self.player.play_file(clip.filepath, loop=use_loop, is_vertical=clip.is_vertical)
+        started = await self.player.play_file(clip.filepath, loop=use_loop, is_vertical=clip.is_vertical, start=start_seconds)
         if started:
             return True
         await self._report_error('player', f'Playback failed for "{clip.name}": {self.player.last_error or "unknown player error"}')
         if not await self._ensure_player_ready(force_restart=True):
             await self._publish_health()
             return False
-        started = await self.player.play_file(clip.filepath, loop=use_loop, is_vertical=clip.is_vertical)
+        started = await self.player.play_file(clip.filepath, loop=use_loop, is_vertical=clip.is_vertical, start=start_seconds)
         if not started:
             await self._report_error('player', f'Playback recovery failed for "{clip.name}": {self.player.last_error or "unknown player error"}')
             await self.player.stop_process()
@@ -614,7 +715,8 @@ class DeckController:
             if not clip:
                 return False
             await self._report_error('player', 'Player connection lost. Attempting automatic recovery.')
-            return await self._start_clip_playback(clip, self.state.transport.loop)
+            resume_at = max(0.0, float(self.state.transport.elapsed_seconds or 0.0))
+            return await self._start_clip_playback(clip, self.state.transport.loop, start_seconds=resume_at)
         finally:
             self._recovering_player = False
 

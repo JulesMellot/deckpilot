@@ -18,6 +18,22 @@ class FakeClip:
     media_kind: str = 'video'
     is_vertical: bool = False
     loop_enabled: bool = False
+    mark_in_seconds: float = 0.0
+    mark_out_seconds: float = 0.0
+
+    def trim_bounds(self) -> tuple[float, float]:
+        duration = max(0.0, float(self.duration_seconds or 0.0))
+        start = max(0.0, min(float(self.mark_in_seconds or 0.0), duration))
+        end = float(self.mark_out_seconds or 0.0)
+        if end <= 0.0 or end > duration:
+            end = duration
+        if end <= start:
+            return 0.0, duration
+        return start, end
+
+    def has_marks(self) -> bool:
+        start, end = self.trim_bounds()
+        return start > 0.0 or end < max(0.0, float(self.duration_seconds or 0.0))
 
     def to_dict(self) -> dict:
         return {
@@ -59,6 +75,20 @@ class FakeClipStore:
         clip = self.clips.get(deck_id)
         if clip:
             clip.loop_enabled = enabled
+        return clip
+
+    async def set_marks(
+        self,
+        deck_id: int,
+        mark_in_seconds: float | None,
+        mark_out_seconds: float | None,
+    ) -> FakeClip | None:
+        clip = self.clips.get(deck_id)
+        if clip:
+            if mark_in_seconds is not None:
+                clip.mark_in_seconds = mark_in_seconds
+            if mark_out_seconds is not None:
+                clip.mark_out_seconds = mark_out_seconds
         return clip
 
 
@@ -121,20 +151,25 @@ class FakePlayer:
         self.available = True
         self.cue_calls: list[tuple[str, bool]] = []
         self.play_calls: list[tuple[str, bool]] = []
+        self.cue_starts: list[float] = []
+        self.play_starts: list[float] = []
         self.pause_calls: list[bool] = []
         self.loop_calls: list[bool] = []
+        self.seek_calls: list[float] = []
         self.stop_calls = 0
         self.stop_process_calls = 0
 
     async def is_available(self) -> bool:
         return self.available
 
-    async def cue_file(self, path: str, loop: bool = False, is_vertical: bool = False) -> bool:
+    async def cue_file(self, path: str, loop: bool = False, is_vertical: bool = False, start: float = 0.0) -> bool:
         self.cue_calls.append((path, loop))
+        self.cue_starts.append(start)
         return True
 
-    async def play_file(self, path: str, loop: bool = False, is_vertical: bool = False) -> bool:
+    async def play_file(self, path: str, loop: bool = False, is_vertical: bool = False, start: float = 0.0) -> bool:
         self.play_calls.append((path, loop))
+        self.play_starts.append(start)
         return True
 
     async def pause(self, enabled: bool = True) -> bool:
@@ -143,6 +178,10 @@ class FakePlayer:
 
     async def set_loop(self, enabled: bool) -> bool:
         self.loop_calls.append(enabled)
+        return True
+
+    async def seek_absolute(self, seconds: float) -> bool:
+        self.seek_calls.append(seconds)
         return True
 
     async def stop(self) -> bool:
@@ -212,6 +251,62 @@ class DeckControllerCueLoopTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self.player.stop_calls, 1)
         self.assertEqual(self.player.stop_process_calls, 0)
+
+    async def test_seek_current_clip_updates_cued_transport_position(self) -> None:
+        await self.controller.goto_clip(7)
+
+        ok = await self.controller.seek_current_clip(4.5)
+
+        self.assertTrue(ok)
+        self.assertEqual(self.player.seek_calls, [4.5])
+        self.assertTrue(self.state.transport.paused)
+        self.assertEqual(self.state.transport.status, 'stopped')
+        self.assertAlmostEqual(self.state.transport.elapsed_seconds, 4.5, places=2)
+        self.assertAlmostEqual(self.state.transport.remaining_seconds, 7.5, places=2)
+
+    async def test_cue_clip_with_marks_starts_at_in_point(self) -> None:
+        self.clip_store.clips[7].mark_in_seconds = 2.0
+        self.clip_store.clips[7].mark_out_seconds = 8.0
+
+        ok = await self.controller.goto_clip(7)
+
+        self.assertTrue(ok)
+        self.assertEqual(self.player.cue_starts, [2.0])
+        self.assertAlmostEqual(self.state.transport.elapsed_seconds, 2.0, places=2)
+        self.assertAlmostEqual(self.state.transport.remaining_seconds, 6.0, places=2)
+        self.assertAlmostEqual(self.state.transport.total_seconds, 12.0, places=2)
+        self.assertAlmostEqual(self.state.transport.mark_in_seconds, 2.0, places=2)
+        self.assertAlmostEqual(self.state.transport.mark_out_seconds, 8.0, places=2)
+        self.assertTrue(self.state.transport.trim_active)
+
+    async def test_play_clip_with_marks_starts_at_in_point(self) -> None:
+        self.clip_store.clips[7].mark_in_seconds = 3.0
+        self.clip_store.clips[7].mark_out_seconds = 9.0
+
+        ok = await self.controller.play(clip_id=7, single_clip=True)
+
+        self.assertTrue(ok)
+        self.assertEqual(self.player.play_starts, [3.0])
+        self.assertAlmostEqual(self.state.transport.elapsed_seconds, 3.0, places=2)
+        self.assertAlmostEqual(self.state.transport.remaining_seconds, 6.0, places=2)
+
+    async def test_set_clip_marks_updates_cued_remaining(self) -> None:
+        await self.controller.goto_clip(7)
+
+        ok = await self.controller.set_clip_marks(7, mark_out=8.0)
+
+        self.assertTrue(ok)
+        self.assertAlmostEqual(self.clip_store.clips[7].mark_out_seconds, 8.0, places=2)
+        self.assertAlmostEqual(self.state.transport.remaining_seconds, 8.0, places=2)
+        self.assertAlmostEqual(self.state.transport.mark_out_seconds, 8.0, places=2)
+        self.assertTrue(self.state.transport.trim_active)
+
+    async def test_set_clip_marks_rejects_invalid_window(self) -> None:
+        ok = await self.controller.set_clip_marks(7, mark_in=8.0, mark_out=2.0)
+
+        self.assertFalse(ok)
+        self.assertEqual(self.clip_store.clips[7].mark_in_seconds, 0.0)
+        self.assertEqual(self.clip_store.clips[7].mark_out_seconds, 0.0)
 
 
 if __name__ == '__main__':

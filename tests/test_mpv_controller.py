@@ -74,5 +74,16 @@ class MPVControllerCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response['request_id'], 1)
         self.assertIsNone(self.controller.last_error)
 
+    async def test_seek_absolute_sends_time_pos_property_update(self) -> None:
+        self.controller._reader = FakeReader(['{"request_id":1,"error":"success"}'])
+
+        ok = await self.controller.seek_absolute(12.5)
+
+        self.assertTrue(ok)
+        payload = self.controller._writer.payloads[0].decode('utf-8')
+        self.assertIn('"time-pos"', payload)
+        self.assertIn('12.5', payload)
+        self.assertIsNone(self.controller.last_error)
+
 if __name__ == '__main__':
     unittest.main()

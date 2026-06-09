@@ -97,6 +97,8 @@ class ClipStore:
                     processing_state TEXT NOT NULL DEFAULT 'ready',
                     loop_enabled INTEGER NOT NULL DEFAULT 0,
                     is_builtin INTEGER NOT NULL DEFAULT 0,
+                    mark_in_seconds REAL NOT NULL DEFAULT 0,
+                    mark_out_seconds REAL NOT NULL DEFAULT 0,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )
                 """
@@ -123,6 +125,10 @@ class ClipStore:
                 conn.execute("ALTER TABLE clips ADD COLUMN is_vertical INTEGER NOT NULL DEFAULT 0")
             if 'processing_state' not in columns:
                 conn.execute("ALTER TABLE clips ADD COLUMN processing_state TEXT NOT NULL DEFAULT 'ready'")
+            if 'mark_in_seconds' not in columns:
+                conn.execute("ALTER TABLE clips ADD COLUMN mark_in_seconds REAL NOT NULL DEFAULT 0")
+            if 'mark_out_seconds' not in columns:
+                conn.execute("ALTER TABLE clips ADD COLUMN mark_out_seconds REAL NOT NULL DEFAULT 0")
             conn.execute("INSERT OR IGNORE INTO media_folders (name) VALUES ('Library')")
             conn.execute("INSERT OR IGNORE INTO media_folders (name) VALUES ('System')")
             conn.commit()
@@ -566,6 +572,8 @@ class ClipStore:
                     processing_state=row['processing_state'] or 'ready',
                     loop_enabled=bool(row['loop_enabled']),
                     is_builtin=bool(row['is_builtin']),
+                    mark_in_seconds=float(row['mark_in_seconds'] or 0.0),
+                    mark_out_seconds=float(row['mark_out_seconds'] or 0.0),
                 )
             )
         return clips
@@ -641,6 +649,40 @@ class ClipStore:
                 return
             row_id = rows[deck_id - 1]['id']
             conn.execute('UPDATE clips SET loop_enabled = ? WHERE id = ?', (1 if enabled else 0, row_id))
+            conn.commit()
+
+    async def set_marks(
+        self,
+        deck_id: int,
+        mark_in_seconds: float | None,
+        mark_out_seconds: float | None,
+    ) -> ClipRecord | None:
+        await asyncio.to_thread(self._set_marks_sync, deck_id, mark_in_seconds, mark_out_seconds)
+        return await self.get_clip(deck_id)
+
+    def _set_marks_sync(
+        self,
+        deck_id: int,
+        mark_in_seconds: float | None,
+        mark_out_seconds: float | None,
+    ) -> None:
+        with self._connect() as conn:
+            rows = conn.execute('SELECT id FROM clips ORDER BY sort_order ASC, id ASC').fetchall()
+            if deck_id < 1 or deck_id > len(rows):
+                return
+            row_id = rows[deck_id - 1]['id']
+            assignments: list[str] = []
+            params: list[Any] = []
+            if mark_in_seconds is not None:
+                assignments.append('mark_in_seconds = ?')
+                params.append(max(0.0, float(mark_in_seconds)))
+            if mark_out_seconds is not None:
+                assignments.append('mark_out_seconds = ?')
+                params.append(max(0.0, float(mark_out_seconds)))
+            if not assignments:
+                return
+            params.append(row_id)
+            conn.execute(f'UPDATE clips SET {", ".join(assignments)} WHERE id = ?', params)
             conn.commit()
 
     async def delete_clip(self, deck_id: int) -> None:

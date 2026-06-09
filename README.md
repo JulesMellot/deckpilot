@@ -56,6 +56,7 @@ Browser UI ──REST + WS 8080──┘         │
 - selectable video output (display) and video format
 - output canvas mode (auto / fixed resolution) for letterboxing control
 - master volume and mute
+- branded **standby slate** on the playout output when idle (grey radial-gradient background with the deck name and live network targets) instead of a black screen, regenerated when the IP changes
 
 ### HyperDeck protocol (ATEM / Companion)
 - multi-client TCP server implementing the commands ATEM and Companion use: `device info`, `configuration`, `clips get`, `transport info`, `slot info`/`slot select`, `play`, `stop`, `goto`/`start`/`end`, `playrange set`/`playrange clear`, `preview`, `notify`, `remote`, `ping`, `help`, `quit`
@@ -178,7 +179,7 @@ DeckPilot is in **alpha / early beta**. It is already usable for testing and rea
 - set marks from the live transport and from the browser preview (with mini-timeline, ticks, and live playhead)
 - media library: streamed uploads, background metadata/thumbnail enrichment with live ETA, folders, grid/list, search, rename/reorder/move/delete
 - playlists: persistent, activate/add/remove/reorder/play/next/loop
-- output & audio: selectable display, video format, canvas mode, volume/mute
+- output & audio: selectable display, video format, canvas mode, volume/mute, branded standby slate on idle output
 - HyperDeck protocol coverage for ATEM/Companion with async notifications and visible network target
 - operator safety: safe mode + arm-to-fire live controls
 - UI/perf: incremental WebSocket rendering, virtualization, cache-busted static assets

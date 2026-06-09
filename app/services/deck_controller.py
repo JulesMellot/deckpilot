@@ -13,6 +13,7 @@ from app.media.playlist_store import PlaylistStore
 from app.player.mpv_controller import MPVController
 from app.services.network_info import NetworkInfoService
 from app.services.output_manager import OutputManager
+from app.services.standby_slate import StandbySlateService
 
 
 class DeckController:
@@ -25,6 +26,7 @@ class DeckController:
         output_manager: OutputManager,
         network_info: NetworkInfoService,
         player: MPVController,
+        slate: StandbySlateService | None = None,
     ) -> None:
         self.config = config
         self.state = state
@@ -33,6 +35,7 @@ class DeckController:
         self.output_manager = output_manager
         self.network_info = network_info
         self.player = player
+        self.slate = slate
         self.current_clip_id: int | None = None
         self._play_started_at: float | None = None
         self._pause_started_at: float | None = None
@@ -53,6 +56,26 @@ class DeckController:
     async def start(self) -> None:
         self._ticker_task = asyncio.create_task(self._ticker())
         self._health_task = asyncio.create_task(self._health_reporter())
+        asyncio.create_task(self._enter_standby(ensure_player=True))
+
+    async def _enter_standby(self, ensure_player: bool = False, force: bool = False) -> None:
+        if not self.slate:
+            return
+        # On the startup task, bail out if a clip became active in the meantime.
+        if not force and (self.current_clip_id is not None or self.state.transport.status == 'play'):
+            return
+        try:
+            slate_path = await self.slate.ensure_slate()
+            if not slate_path:
+                return
+            if ensure_player and not await self._ensure_player_ready():
+                return
+            if not await self.player.is_available():
+                return
+            await self.player.show_standby(slate_path)
+        except Exception:
+            # The standby slate is cosmetic; never let it disrupt playback.
+            pass
 
     async def stop(self) -> None:
         if self._ticker_task:
@@ -340,6 +363,7 @@ class DeckController:
             display_timecode='00:00:00:00',
             playlist_mode=False,
         )
+        await self._enter_standby(force=True)
         await self._publish_health()
 
     async def cut_to_black(self) -> bool:

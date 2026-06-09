@@ -156,11 +156,16 @@ class FakePlayer:
         self.pause_calls: list[bool] = []
         self.loop_calls: list[bool] = []
         self.seek_calls: list[float] = []
+        self.standby_calls: list[str] = []
         self.stop_calls = 0
         self.stop_process_calls = 0
 
     async def is_available(self) -> bool:
         return self.available
+
+    async def show_standby(self, path: str) -> bool:
+        self.standby_calls.append(path)
+        return True
 
     async def cue_file(self, path: str, loop: bool = False, is_vertical: bool = False, start: float = 0.0) -> bool:
         self.cue_calls.append((path, loop))
@@ -202,6 +207,16 @@ class FakePlayer:
 
     async def set_output_geometry(self, width: int | None, height: int | None) -> None:
         return None
+
+
+class FakeSlate:
+    def __init__(self, path: str | None = '/tmp/standby.png') -> None:
+        self.path = path
+        self.ensure_calls = 0
+
+    async def ensure_slate(self) -> str | None:
+        self.ensure_calls += 1
+        return self.path
 
 
 class DeckControllerCueLoopTests(unittest.IsolatedAsyncioTestCase):
@@ -307,6 +322,32 @@ class DeckControllerCueLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(ok)
         self.assertEqual(self.clip_store.clips[7].mark_in_seconds, 0.0)
         self.assertEqual(self.clip_store.clips[7].mark_out_seconds, 0.0)
+
+    async def test_stop_playback_shows_standby_slate(self) -> None:
+        slate = FakeSlate()
+        controller = DeckController(
+            config=AppConfig(),
+            state=self.state,
+            clip_store=self.clip_store,
+            playlist_store=FakePlaylistStore(),
+            output_manager=FakeOutputManager(),
+            network_info=FakeNetworkInfo(),
+            player=self.player,
+            slate=slate,
+        )
+        await self.state.set_transport(status='play', paused=False, speed=100, clip_id=7)
+
+        await controller.stop_playback()
+
+        self.assertEqual(self.player.standby_calls, ['/tmp/standby.png'])
+        self.assertGreaterEqual(slate.ensure_calls, 1)
+
+    async def test_stop_playback_without_slate_does_not_call_standby(self) -> None:
+        await self.state.set_transport(status='play', paused=False, speed=100, clip_id=7)
+
+        await self.controller.stop_playback()
+
+        self.assertEqual(self.player.standby_calls, [])
 
 
 if __name__ == '__main__':

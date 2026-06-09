@@ -131,6 +131,17 @@ class MPVController:
             await self.seek_absolute(start)
         return True
 
+    async def show_standby(self, path: str) -> bool:
+        if not await self._command_ok(['set_property', 'vf', '']):
+            return False
+        # Hold the still slate indefinitely instead of advancing past it.
+        await self._command_ok(['set_property', 'image-display-duration', 'inf'])
+        if not await self._command_ok(['loadfile', path, 'replace']):
+            return False
+        if not await self.set_loop(False):
+            return False
+        return await self._command_ok(['set_property', 'pause', False])
+
     async def stop(self) -> bool:
         return await self._command_ok(['stop'])
 

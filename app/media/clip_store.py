@@ -14,6 +14,8 @@ from typing import Any, Awaitable, Callable, Iterable, List
 from app.core.config import AppConfig
 from app.core.models import ClipRecord
 
+IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
+
 
 class ClipStore:
     def __init__(self, config: AppConfig) -> None:
@@ -89,6 +91,7 @@ class ClipStore:
                     codec TEXT NOT NULL DEFAULT 'unknown',
                     width INTEGER NOT NULL DEFAULT 0,
                     height INTEGER NOT NULL DEFAULT 0,
+                    media_kind TEXT NOT NULL DEFAULT 'video',
                     is_vertical INTEGER NOT NULL DEFAULT 0,
                     thumbnail_path TEXT,
                     processing_state TEXT NOT NULL DEFAULT 'ready',
@@ -114,6 +117,8 @@ class ClipStore:
                 conn.execute("ALTER TABLE clips ADD COLUMN width INTEGER NOT NULL DEFAULT 0")
             if 'height' not in columns:
                 conn.execute("ALTER TABLE clips ADD COLUMN height INTEGER NOT NULL DEFAULT 0")
+            if 'media_kind' not in columns:
+                conn.execute("ALTER TABLE clips ADD COLUMN media_kind TEXT NOT NULL DEFAULT 'video'")
             if 'is_vertical' not in columns:
                 conn.execute("ALTER TABLE clips ADD COLUMN is_vertical INTEGER NOT NULL DEFAULT 0")
             if 'processing_state' not in columns:
@@ -153,8 +158,8 @@ class ClipStore:
                     """
                     INSERT INTO clips (
                         sort_order, name, folder, filename, filepath, duration_seconds, duration_timecode,
-                        framerate, codec, width, height, is_vertical, thumbnail_path, processing_state, loop_enabled, is_builtin
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
+                        framerate, codec, width, height, media_kind, is_vertical, thumbnail_path, processing_state, loop_enabled, is_builtin
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
                     """,
                     (
                         sort_seed,
@@ -168,6 +173,7 @@ class ClipStore:
                         'unknown',
                         0,
                         0,
+                        self._media_kind_for_path(file_path),
                         0,
                         None,
                         'pending',
@@ -224,8 +230,8 @@ class ClipStore:
                     """
                     INSERT INTO clips (
                         sort_order, name, folder, filename, filepath, duration_seconds, duration_timecode,
-                        framerate, codec, width, height, is_vertical, thumbnail_path, processing_state, loop_enabled, is_builtin
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1)
+                        framerate, codec, width, height, media_kind, is_vertical, thumbnail_path, processing_state, loop_enabled, is_builtin
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1)
                     """,
                     (
                         sort_seed,
@@ -239,6 +245,7 @@ class ClipStore:
                         meta['codec'],
                         meta['width'],
                         meta['height'],
+                        meta['media_kind'],
                         1 if meta['is_vertical'] else 0,
                         thumb,
                         'ready',
@@ -247,14 +254,16 @@ class ClipStore:
             conn.commit()
 
     def _probe_clip(self, file_path: Path) -> dict:
+        media_kind = self._media_kind_for_path(file_path)
         if not shutil.which(self.config.ffprobe_binary):
             return {
-                'duration_seconds': 0.0,
-                'duration_timecode': '00:00:00:00',
+                'duration_seconds': self._default_duration_for_kind(media_kind),
+                'duration_timecode': seconds_to_timecode(self._default_duration_for_kind(media_kind), self.config.default_framerate),
                 'framerate': self.config.default_framerate,
-                'codec': 'unknown',
+                'codec': media_kind if media_kind == 'image' else 'unknown',
                 'width': 0,
                 'height': 0,
+                'media_kind': media_kind,
                 'is_vertical': False,
             }
         cmd = [
@@ -275,19 +284,27 @@ class ClipStore:
         height = 0
         for line in result.stdout.splitlines():
             if line.startswith('duration='):
-                duration_seconds = float(line.split('=', 1)[1] or 0)
+                raw_duration = line.split('=', 1)[1]
+                try:
+                    duration_seconds = float(raw_duration or 0)
+                except ValueError:
+                    duration_seconds = 0.0
             elif line.startswith('r_frame_rate='):
                 raw = line.split('=', 1)[1]
                 if '/' in raw:
                     num, den = raw.split('/', 1)
                     if float(den or 1) != 0:
-                        framerate = round(float(num) / float(den), 2)
+                        value = round(float(num) / float(den), 2)
+                        if value > 0:
+                            framerate = value
             elif line.startswith('codec_name=') and codec == 'unknown':
                 codec = line.split('=', 1)[1]
             elif line.startswith('width=') and width == 0:
                 width = int(float(line.split('=', 1)[1] or 0))
             elif line.startswith('height=') and height == 0:
                 height = int(float(line.split('=', 1)[1] or 0))
+        if media_kind == 'image' and duration_seconds <= 0:
+            duration_seconds = self.config.default_image_duration_seconds
         return {
             'duration_seconds': duration_seconds,
             'duration_timecode': seconds_to_timecode(duration_seconds, framerate),
@@ -295,12 +312,16 @@ class ClipStore:
             'codec': codec,
             'width': width,
             'height': height,
+            'media_kind': media_kind,
             'is_vertical': bool(height and width and height > width),
         }
 
     def _metadata_needs_refresh(self, row: sqlite3.Row) -> bool:
+        expected_kind = self._media_kind_for_path(Path(row['filepath']))
         return (
-            not row['width']
+            not row['media_kind']
+            or row['media_kind'] != expected_kind
+            or not row['width']
             or not row['height']
             or not row['duration_seconds']
             or row['duration_timecode'] == '00:00:00:00'
@@ -309,6 +330,8 @@ class ClipStore:
         )
 
     def _generate_thumbnail(self, file_path: Path) -> str | None:
+        if self._media_kind_for_path(file_path) == 'image':
+            return None
         if not shutil.which(self.config.ffmpeg_binary):
             return None
         output = self._thumbnail_output_path(file_path)
@@ -341,6 +364,8 @@ class ClipStore:
         return self.thumbnails_dir / f'{file_path.stem}-{fingerprint}.jpg'
 
     def _thumbnail_needs_refresh(self, file_path: Path, thumbnail_path: str | None) -> bool:
+        if self._media_kind_for_path(file_path) == 'image':
+            return False
         if not thumbnail_path:
             return True
         output = Path(thumbnail_path)
@@ -400,6 +425,7 @@ class ClipStore:
         if not file_path.exists():
             return False
         meta = self._probe_clip(file_path)
+        media_kind = meta.get('media_kind', self._media_kind_for_path(file_path))
         thumb = self._generate_thumbnail(file_path)
         with self._connect() as conn:
             row = conn.execute('SELECT * FROM clips WHERE filename = ?', (file_path.name,)).fetchone()
@@ -409,12 +435,13 @@ class ClipStore:
             conn.execute(
                 '''
                 UPDATE clips
-                SET width = ?, height = ?, is_vertical = ?, codec = ?, framerate = ?, duration_seconds = ?, duration_timecode = ?, thumbnail_path = ?, processing_state = ?
+                SET width = ?, height = ?, media_kind = ?, is_vertical = ?, codec = ?, framerate = ?, duration_seconds = ?, duration_timecode = ?, thumbnail_path = ?, processing_state = ?
                 WHERE filename = ?
                 ''',
                 (
                     meta['width'],
                     meta['height'],
+                    media_kind,
                     1 if meta['is_vertical'] else 0,
                     meta['codec'],
                     meta['framerate'],
@@ -533,6 +560,7 @@ class ClipStore:
                     codec=row['codec'],
                     width=row['width'],
                     height=row['height'],
+                    media_kind=row['media_kind'] or self._media_kind_for_path(Path(row['filepath'])),
                     is_vertical=bool(row['is_vertical']),
                     thumbnail_path=row['thumbnail_path'],
                     processing_state=row['processing_state'] or 'ready',
@@ -642,6 +670,14 @@ class ClipStore:
             for sort_order, row_id in enumerate(ordered_row_ids, start=1):
                 conn.execute('UPDATE clips SET sort_order = ? WHERE id = ?', (sort_order, row_id))
             conn.commit()
+
+    def _media_kind_for_path(self, file_path: Path) -> str:
+        return 'image' if file_path.suffix.lower() in IMAGE_EXTENSIONS else 'video'
+
+    def _default_duration_for_kind(self, media_kind: str) -> float:
+        if media_kind == 'image':
+            return float(self.config.default_image_duration_seconds)
+        return 0.0
 
 
 def seconds_to_timecode(seconds: float, framerate: float) -> str:

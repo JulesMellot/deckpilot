@@ -15,6 +15,7 @@ class FakeClip:
     filepath: str
     duration_seconds: float = 12.0
     framerate: float = 25.0
+    media_kind: str = 'video'
     is_vertical: bool = False
     loop_enabled: bool = False
 
@@ -30,6 +31,7 @@ class FakeClip:
             'codec': 'h264',
             'width': 1920,
             'height': 1080,
+            'media_kind': self.media_kind,
             'is_vertical': self.is_vertical,
             'thumbnail_path': None,
             'loop_enabled': self.loop_enabled,

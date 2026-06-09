@@ -108,6 +108,12 @@
         <h2>MEDIA POOL</h2>
         <div class="header-actions">
           <select id="folder-filter" class="action-select"></select>
+          <select id="media-type-filter" class="action-select">
+            <option value="all">ALL MEDIA</option>
+            <option value="video">VIDEOS</option>
+            <option value="image">IMAGES</option>
+          </select>
+          <input id="media-search" class="action-input" type="search" placeholder="SEARCH MEDIA">
           <button id="btn-back-all" class="action-btn" hidden>ALL</button>
           <button id="btn-toggle-media-view" class="action-btn">LIST</button>
           <button id="btn-new-folder" class="action-btn">NEW FOLDER</button>
@@ -123,7 +129,7 @@
       </div>
 
       <div id="dropzone" class="media-workspace">
-        <input id="file-input" type="file" multiple accept=".mp4,.mov,.mkv" hidden>
+        <input id="file-input" type="file" multiple accept=".mp4,.mov,.mkv,.jpg,.jpeg,.png,.webp,.gif" hidden>
         
         <div class="upload-overlay" id="upload-wrapper" style="display: none;">
           <div class="upload-box">
@@ -253,6 +259,7 @@
         <button id="btn-preview-close" class="action-btn">CLOSE</button>
       </div>
       <div class="preview-player-wrap modal-player">
+        <img id="preview-image" class="preview-image" alt="" hidden>
         <video id="preview-video" class="preview-video" controls preload="metadata"></video>
       </div>
       <div class="preview-actions">

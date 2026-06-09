@@ -18,6 +18,7 @@ class ClipRecord:
     codec: str
     width: int = 0
     height: int = 0
+    media_kind: str = "video"
     is_vertical: bool = False
     thumbnail_path: str | None = None
     processing_state: str = "ready"

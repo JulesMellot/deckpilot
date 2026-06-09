@@ -6,6 +6,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from app.core.config import AppConfig
 from app.media.clip_store import ClipStore
@@ -79,7 +80,18 @@ class ClipStoreThumbnailTests(unittest.TestCase):
         self.assertEqual(clips[0].duration_seconds, 0.0)
         self.assertEqual(clips[0].thumbnail_path, None)
         self.assertEqual(clips[0].codec, 'unknown')
+        self.assertEqual(clips[0].media_kind, 'video')
         self.assertEqual(clips[0].processing_state, 'pending')
+
+    def test_sync_detects_image_placeholder_kind(self) -> None:
+        clip = Path(self.config.clips_dir) / 'still.jpg'
+        clip.write_bytes(b'image-data')
+
+        pending = self.store._sync_with_disk_sync()
+        clips = self.store._list_clips_sync()
+
+        self.assertEqual(pending, [str(clip)])
+        self.assertEqual(clips[0].media_kind, 'image')
 
     def test_enrich_clip_sync_updates_placeholder_record(self) -> None:
         clip = Path(self.config.clips_dir) / 'enrich.mp4'
@@ -109,6 +121,31 @@ class ClipStoreThumbnailTests(unittest.TestCase):
         self.assertEqual(clips[0].thumbnail_path, str(thumb_path))
         self.assertEqual(clips[0].codec, 'h264')
         self.assertEqual(clips[0].processing_state, 'ready')
+
+    def test_generate_thumbnail_skips_image_files(self) -> None:
+        image = Path(self.config.clips_dir) / 'poster.png'
+        image.write_bytes(b'image-data')
+
+        self.assertIsNone(self.store._generate_thumbnail(image))
+
+    def test_probe_clip_applies_default_duration_to_images(self) -> None:
+        image = Path(self.config.clips_dir) / 'poster.jpg'
+        image.write_bytes(b'image-data')
+
+        with patch('app.media.clip_store.shutil.which', return_value='/usr/bin/ffprobe'):
+            with patch('app.media.clip_store.subprocess.run') as mock_run:
+                mock_run.return_value.stdout = '\n'.join([
+                    'codec_name=mjpeg',
+                    'width=1920',
+                    'height=1080',
+                    'duration=N/A',
+                ])
+                meta = self.store._probe_clip(image)
+
+        self.assertEqual(meta['media_kind'], 'image')
+        self.assertEqual(meta['codec'], 'mjpeg')
+        self.assertEqual(meta['duration_seconds'], self.config.default_image_duration_seconds)
+        self.assertEqual(meta['duration_timecode'], '00:00:10:00')
 
     def test_processing_status_counts_pending_processing_and_error(self) -> None:
         with self.store._connect() as conn:

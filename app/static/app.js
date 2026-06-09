@@ -66,11 +66,14 @@ const DOM = {
   uploadProgress: document.getElementById('upload-progress'),
   btnRefreshMedia: document.getElementById('btn-refresh-media'),
   folderFilter: document.getElementById('folder-filter'),
+  mediaTypeFilter: document.getElementById('media-type-filter'),
+  mediaSearch: document.getElementById('media-search'),
   btnBackAll: document.getElementById('btn-back-all'),
   btnToggleMediaView: document.getElementById('btn-toggle-media-view'),
   btnNewFolder: document.getElementById('btn-new-folder'),
   btnMoveFolder: document.getElementById('btn-move-folder'),
   previewModal: document.getElementById('preview-modal'),
+  previewImage: document.getElementById('preview-image'),
   previewVideo: document.getElementById('preview-video'),
   previewTitle: document.getElementById('preview-title'),
   previewSubtitle: document.getElementById('preview-subtitle'),
@@ -191,6 +194,18 @@ function reindexClips(clips) {
 
 function currentFolder() {
   return DOM.folderFilter.value || 'All';
+}
+
+function currentMediaTypeFilter() {
+  return DOM.mediaTypeFilter.value || 'all';
+}
+
+function currentMediaSearchTerm() {
+  return (DOM.mediaSearch.value || '').trim().toLowerCase();
+}
+
+function hasActiveMediaFilters() {
+  return currentMediaTypeFilter() !== 'all' || Boolean(currentMediaSearchTerm());
 }
 
 function buildFolderClipMap(clips) {
@@ -351,6 +366,32 @@ function thumbnailUrl(thumbnailPath) {
   return `/thumbs/${thumbnailPath.split('/').pop()}`;
 }
 
+function mediaSourceUrl(clip) {
+  return `/media/${encodeURIComponent(clip.filename)}`;
+}
+
+function mediaArtworkUrl(clip) {
+  if (clip.thumbnail_path) return thumbnailUrl(clip.thumbnail_path);
+  if (clip.media_kind === 'image') return mediaSourceUrl(clip);
+  return null;
+}
+
+function mediaKindLabel(clip) {
+  return clip.media_kind === 'image' ? 'IMAGE' : 'VIDEO';
+}
+
+function clipResolutionLabel(clip) {
+  if (!clip.width || !clip.height) return null;
+  return `${clip.width}x${clip.height}`;
+}
+
+function clipDurationLabel(clip) {
+  if (clip.media_kind === 'image') {
+    return `${Math.round(clip.duration_seconds || 0)}s still`;
+  }
+  return clip.duration_timecode.substring(0, 8);
+}
+
 function hideUploadOverlaySoon(delayMs = 900) {
   if (state.uploadHideTimer) {
     clearTimeout(state.uploadHideTimer);
@@ -415,22 +456,32 @@ function updateMediaNode(node, clip, activeClipId, status) {
   const processingLabel = clipProcessingLabel(clip);
   const playbackActive = clip.deck_id === activeClipId && status === 'play';
   const overlayLabel = playbackActive ? 'PLAYING' : processingLabel;
+  const metaParts = [
+    clip.folder,
+    mediaKindLabel(clip),
+    clipDurationLabel(clip),
+    clipResolutionLabel(clip),
+    clip.media_kind === 'video' ? `${clip.framerate}fps` : null,
+    clip.is_vertical ? 'vertical' : null,
+    processingLabel || null,
+  ].filter(Boolean);
 
   node.dataset.deckId = clip.deck_id;
+  node.dataset.mediaKind = clip.media_kind || 'video';
   node.dataset.processingState = clip.processing_state || 'ready';
   idNode.textContent = String(clip.deck_id).padStart(2, '0');
   titleNode.textContent = clip.name;
-  metaNode.textContent = `${clip.folder} | ${clip.duration_timecode.substring(0, 8)} | ${clip.framerate}fps${clip.is_vertical ? ' | vertical' : ''}${processingLabel ? ` | ${processingLabel}` : ''}`;
+  metaNode.textContent = metaParts.join(' | ');
 
-  if (clip.thumbnail_path) {
-    const thumbSrc = thumbnailUrl(clip.thumbnail_path);
+  const artworkSrc = mediaArtworkUrl(clip);
+  if (artworkSrc) {
     img.loading = 'lazy';
     img.decoding = 'async';
     img.fetchPriority = 'low';
     img.alt = clip.name;
     img.draggable = false;
-    if (img.getAttribute('src') !== thumbSrc) {
-      img.src = thumbSrc;
+    if (img.getAttribute('src') !== artworkSrc) {
+      img.src = artworkSrc;
     }
     img.style.display = '';
   } else {
@@ -489,7 +540,9 @@ function getOrCreateFolderCard(folder) {
 function updateFolderCard(card, folder, folderClips) {
   card.dataset.folder = folder;
   card.querySelector('.folder-card-title').textContent = folder;
-  card.querySelector('.folder-card-meta').textContent = `${folderClips.length} clip${folderClips.length > 1 ? 's' : ''}`;
+  const imageCount = folderClips.filter((clip) => clip.media_kind === 'image').length;
+  const videoCount = folderClips.length - imageCount;
+  card.querySelector('.folder-card-meta').textContent = `${folderClips.length} item${folderClips.length > 1 ? 's' : ''} | ${videoCount} video${videoCount > 1 ? 's' : ''} | ${imageCount} image${imageCount > 1 ? 's' : ''}`;
   const preview = card.querySelector('.folder-card-preview');
   preview.replaceChildren();
 
@@ -499,7 +552,8 @@ function updateFolderCard(card, folder, folderClips) {
     thumbClips.forEach((clip) => {
       const thumb = document.createElement('div');
       thumb.className = 'folder-card-thumb';
-      if (clip.thumbnail_path) {
+      const artworkSrc = mediaArtworkUrl(clip);
+      if (artworkSrc) {
         const image = document.createElement('img');
         image.className = 'folder-card-thumb-image';
         image.loading = 'lazy';
@@ -507,7 +561,7 @@ function updateFolderCard(card, folder, folderClips) {
         image.fetchPriority = 'low';
         image.draggable = false;
         image.alt = clip.name;
-        image.src = thumbnailUrl(clip.thumbnail_path);
+        image.src = artworkSrc;
         thumb.appendChild(image);
       } else {
         thumb.classList.add('empty');
@@ -637,8 +691,15 @@ async function playAdjacentClip(direction) {
 function filteredClips() {
   const clips = state.snapshot?.clips || [];
   const folder = currentFolder();
-  if (folder === 'All') return clips;
-  return clips.filter((clip) => clip.folder === folder);
+  const mediaType = currentMediaTypeFilter();
+  const searchTerm = currentMediaSearchTerm();
+  return clips.filter((clip) => {
+    if (folder !== 'All' && clip.folder !== folder) return false;
+    if (mediaType !== 'all' && clip.media_kind !== mediaType) return false;
+    if (!searchTerm) return true;
+    const haystack = `${clip.name} ${clip.filename} ${clip.folder} ${clip.codec} ${clip.media_kind}`.toLowerCase();
+    return haystack.includes(searchTerm);
+  });
 }
 
 function closeAppDialog(result) {
@@ -745,6 +806,11 @@ async function showNotice(title, message) {
 
 function closePreviewModal() {
   DOM.previewVideo.pause();
+  DOM.previewVideo.removeAttribute('src');
+  DOM.previewVideo.load();
+  DOM.previewImage.hidden = true;
+  DOM.previewImage.removeAttribute('src');
+  DOM.previewImage.removeAttribute('alt');
   DOM.previewModal.hidden = true;
 }
 
@@ -1097,7 +1163,9 @@ function openPreviewModal(clipId) {
   state.selectedClipId = clipId;
   renderPreview();
   DOM.previewModal.hidden = false;
-  DOM.previewVideo.currentTime = 0;
+  if (!DOM.previewVideo.hidden) {
+    DOM.previewVideo.currentTime = 0;
+  }
 }
 
 async function playPlaylist() {
@@ -1215,9 +1283,10 @@ function renderFolders() {
 
 function renderMediaToolbar() {
   const folder = currentFolder();
-  const isAll = folder === 'All';
-  DOM.btnBackAll.hidden = isAll;
-  DOM.btnToggleMediaView.hidden = isAll;
+  const isFolderOverview = folder === 'All' && !hasActiveMediaFilters();
+  DOM.btnBackAll.hidden = folder === 'All' && !hasActiveMediaFilters();
+  DOM.btnBackAll.textContent = folder === 'All' ? 'RESET' : 'ALL';
+  DOM.btnToggleMediaView.hidden = isFolderOverview;
   DOM.btnToggleMediaView.textContent = state.mediaView === 'grid' ? 'LIST' : 'GRID';
   DOM.btnToggleMediaView.classList.toggle('active', state.mediaView === 'list');
 }
@@ -1266,14 +1335,40 @@ function renderPreview() {
   if (!clip) {
     DOM.previewTitle.textContent = 'Aucun clip selectionne';
     DOM.previewSubtitle.textContent = 'Selectionne un clip pour le previsualiser dans le navigateur.';
+    DOM.previewImage.hidden = true;
+    DOM.previewImage.removeAttribute('src');
     DOM.previewVideo.removeAttribute('src');
     DOM.previewVideo.load();
     return;
   }
   DOM.previewTitle.textContent = clip.name;
   const orientation = clip.is_vertical ? 'VERTICAL FILL' : 'STANDARD';
-  DOM.previewSubtitle.textContent = `${clip.folder} | ${clip.duration_timecode.substring(0, 8)} | ${clip.framerate}fps | ${clip.codec} | ${orientation}`;
-  const nextSrc = `/media/${encodeURIComponent(clip.filename)}`;
+  const subtitleParts = [
+    clip.folder,
+    mediaKindLabel(clip),
+    clipDurationLabel(clip),
+    clipResolutionLabel(clip),
+    clip.codec,
+    clip.media_kind === 'video' ? `${clip.framerate}fps` : null,
+    orientation,
+  ].filter(Boolean);
+  DOM.previewSubtitle.textContent = subtitleParts.join(' | ');
+  const nextSrc = mediaSourceUrl(clip);
+  if (clip.media_kind === 'image') {
+    DOM.previewVideo.pause();
+    DOM.previewVideo.removeAttribute('src');
+    DOM.previewVideo.load();
+    DOM.previewVideo.hidden = true;
+    DOM.previewImage.hidden = false;
+    DOM.previewImage.alt = clip.name;
+    if (DOM.previewImage.getAttribute('src') !== nextSrc) {
+      DOM.previewImage.src = nextSrc;
+    }
+    return;
+  }
+  DOM.previewImage.hidden = true;
+  DOM.previewImage.removeAttribute('src');
+  DOM.previewVideo.hidden = false;
   if (DOM.previewVideo.getAttribute('src') !== nextSrc) {
     DOM.previewVideo.src = nextSrc;
     DOM.previewVideo.load();
@@ -1282,7 +1377,7 @@ function renderPreview() {
 
 function renderMediaGrid(clips, activeClipId, status) {
   const folder = currentFolder();
-  if (folder === 'All') {
+  if (folder === 'All' && !hasActiveMediaFilters()) {
     state.mediaVirtualEnabled = false;
     state.mediaVirtualKey = null;
     state.mediaRenderLimit = 0;
@@ -1599,8 +1694,20 @@ DOM.folderFilter.addEventListener('change', () => {
   renderMediaToolbar();
   renderMediaGrid(filteredClips(), state.snapshot.transport.clip_id, state.snapshot.transport.status);
 });
+DOM.mediaTypeFilter.addEventListener('change', () => {
+  DOM.dropzone.scrollTop = 0;
+  renderMediaToolbar();
+  renderMediaGrid(filteredClips(), state.snapshot.transport.clip_id, state.snapshot.transport.status);
+});
+DOM.mediaSearch.addEventListener('input', () => {
+  DOM.dropzone.scrollTop = 0;
+  renderMediaToolbar();
+  renderMediaGrid(filteredClips(), state.snapshot.transport.clip_id, state.snapshot.transport.status);
+});
 DOM.btnBackAll.addEventListener('click', () => {
   DOM.folderFilter.value = 'All';
+  DOM.mediaTypeFilter.value = 'all';
+  DOM.mediaSearch.value = '';
   DOM.dropzone.scrollTop = 0;
   renderMediaToolbar();
   renderMediaGrid(filteredClips(), state.snapshot.transport.clip_id, state.snapshot.transport.status);

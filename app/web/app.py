@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -116,9 +116,20 @@ def build_app(
     app.mount('/static', StaticFiles(directory=static_dir), name='static')
     app.mount('/media', StaticFiles(directory=controller.config.clips_dir), name='media')
 
+    def _asset_version(name: str) -> int:
+        try:
+            return int((static_dir / name).stat().st_mtime)
+        except OSError:
+            return 0
+
     @app.get('/')
-    async def index() -> FileResponse:
-        return FileResponse(static_dir / 'index.html')
+    async def index() -> HTMLResponse:
+        # Stamp static asset links with their file mtime so browsers always
+        # pull fresh CSS/JS after an update instead of serving stale cache.
+        html = (static_dir / 'index.html').read_text(encoding='utf-8')
+        for asset in ('styles.css', 'app.js'):
+            html = html.replace(f'/static/{asset}', f'/static/{asset}?v={_asset_version(asset)}')
+        return HTMLResponse(html, headers={'Cache-Control': 'no-cache'})
 
     @app.get('/thumbs/{thumb_name}')
     async def get_thumbnail(thumb_name: str) -> FileResponse:

@@ -343,6 +343,7 @@ header { grid-area: header; }
 .transport-scrub-actions .action-btn {
   flex: 1;
   justify-content: center;
+  white-space: nowrap;
 }
 
 .transport-marks {
@@ -359,6 +360,25 @@ header { grid-area: header; }
 .transport-marks-actions .action-btn {
   flex: 1;
   justify-content: center;
+  white-space: nowrap;
+}
+
+.mark-btn-in:not(:disabled) {
+  border-color: rgba(0, 211, 98, 0.5);
+  color: var(--color-ready);
+}
+
+.mark-btn-in:not(:disabled):hover {
+  background: rgba(0, 211, 98, 0.12);
+}
+
+.mark-btn-out:not(:disabled) {
+  border-color: rgba(255, 42, 42, 0.5);
+  color: var(--color-live);
+}
+
+.mark-btn-out:not(:disabled):hover {
+  background: rgba(255, 42, 42, 0.12);
 }
 
 .transport-marks-readout {
@@ -538,17 +558,18 @@ header { grid-area: header; }
 .media-workspace.dragover { background-color: rgba(0, 122, 204, 0.1); }
 
 .preview-player-wrap {
+  position: relative;
   aspect-ratio: 16 / 9;
+  width: 100%;
   background: #000;
   border: 1px solid var(--border-dim);
+  overflow: hidden;
 }
 
-.preview-video {
-  width: 100%;
-  height: 100%;
-  background: #000;
-}
+.preview-video,
 .preview-image {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   object-fit: contain;
@@ -664,7 +685,8 @@ header { grid-area: header; }
 }
 
 .modal-player {
-  min-height: 420px;
+  min-height: 0;
+  max-height: 62vh;
 }
 
 .settings-dialog {

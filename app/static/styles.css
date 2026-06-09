@@ -388,28 +388,78 @@ header { grid-area: header; }
   color: #ff9f1a;
 }
 
+.vu-meter-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 0.3rem;
+  font-family: var(--font-mono);
+}
+
+.vu-meter-title {
+  font-size: 0.66rem;
+  letter-spacing: 0.12em;
+  color: var(--text-dim);
+}
+
+.vu-db {
+  font-size: 0.78rem;
+  color: var(--text-main);
+}
+
+.vu-db.is-hot { color: #ff9f1a; }
+.vu-db.is-clip { color: var(--color-live); }
+
+/* The dim gradient scale is always visible; the fill is the same gradient at
+   full brightness revealed with a clip-path, so colors never shift position. */
 .vu-meter {
   position: relative;
-  height: 8px;
+  height: 14px;
   border: 1px solid var(--border-dim);
-  background: linear-gradient(to right, #00d362 0%, #00d362 66%, #ff9f1a 66%, #ff9f1a 85%, #ff2a2a 85%, #ff2a2a 100%);
-  margin-bottom: 0.5rem;
+  background:
+    repeating-linear-gradient(to right, transparent 0 4px, var(--bg-panel) 4px 6px),
+    linear-gradient(to right, #00d362 0%, #00d362 68%, #ff9f1a 68%, #ff9f1a 85%, #ff2a2a 85%, #ff2a2a 100%);
   overflow: hidden;
 }
 
-/* Right-anchored shutter covering the unused part of the fixed gradient. */
-.vu-meter-fill {
+.vu-meter::before {
+  content: '';
   position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: 100%;
-  background: var(--bg-app);
-  transition: width 0.25s linear;
+  inset: 0;
+  background: rgba(5, 5, 5, 0.82);
 }
 
-.vu-meter.muted {
-  opacity: 0.35;
+.vu-meter-fill {
+  position: absolute;
+  inset: 0;
+  background:
+    repeating-linear-gradient(to right, transparent 0 4px, var(--bg-panel) 4px 6px),
+    linear-gradient(to right, #00d362 0%, #00d362 68%, #ff9f1a 68%, #ff9f1a 85%, #ff2a2a 85%, #ff2a2a 100%);
+  clip-path: inset(0 100% 0 0);
+  transition: clip-path 0.2s linear;
+}
+
+.vu-meter-peak {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--text-main);
+  left: 0%;
+}
+
+.vu-meter.muted .vu-meter-fill,
+.vu-meter.muted .vu-meter-peak {
+  opacity: 0.25;
+}
+
+.vu-meter-scale {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  color: var(--text-dim);
+  margin: 0.15rem 0 0.5rem;
 }
 
 .transport-speed {
@@ -495,6 +545,127 @@ header { grid-area: header; }
   display: flex;
   gap: 0.4rem;
   flex-wrap: wrap;
+}
+
+.monitor-meta {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+  text-align: center;
+  margin-bottom: 0.6rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pad-panel {
+  margin-top: 0.8rem;
+}
+
+.pad-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+  margin-bottom: 0.4rem;
+}
+
+.pad-panel-hint {
+  font-size: 0.6rem;
+}
+
+.pad-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.4rem;
+}
+
+.pad-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
+  padding: 0.4rem 0.5rem;
+  min-height: 3rem;
+  background: var(--bg-element);
+  border: 1px solid var(--border-dim);
+  border-radius: 4px;
+  color: var(--text-main);
+  cursor: pointer;
+  text-align: left;
+  overflow: hidden;
+}
+
+.pad-btn:hover:not(:disabled) {
+  border-color: var(--border-bright);
+  background: var(--bg-panel-light);
+}
+
+.pad-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.pad-btn-key {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: var(--color-accent);
+}
+
+.pad-btn-name {
+  font-size: 0.68rem;
+  color: var(--text-dim);
+  width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pad-btn.active {
+  border-color: var(--color-live);
+  background: rgba(255, 42, 42, 0.12);
+}
+
+.pad-btn.active .pad-btn-key { color: var(--color-live); }
+
+.pad-btn.cued {
+  border-color: var(--color-ready);
+  background: rgba(0, 211, 98, 0.08);
+}
+
+.pad-btn.cued .pad-btn-key { color: var(--color-ready); }
+
+.watchfolder-hint {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  text-align: center;
+  padding: 0.4rem;
+  border-top: 1px dashed var(--border-dim);
+  margin-top: 0.4rem;
+}
+
+.shortcuts-legend {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.3rem 1rem;
+  font-size: 0.78rem;
+  color: var(--text-dim);
+}
+
+.shortcuts-legend kbd {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  padding: 0.05rem 0.3rem;
+  border: 1px solid var(--border-bright);
+  border-radius: 3px;
+  background: var(--bg-element);
+  color: var(--text-main);
 }
 
 .playlist-item-end {

@@ -49,6 +49,7 @@
         <div class="clip-title-marquee">
           <h2 id="live-clip-name">NO CLIP LOADED</h2>
         </div>
+        <div class="monitor-meta" id="live-clip-meta">STANDBY</div>
         <div class="next-clip-bar" id="next-clip-bar" hidden>
           <span class="next-clip-label">NEXT</span>
           <span class="next-clip-name" id="next-clip-name">--</span>
@@ -120,8 +121,16 @@
       <div class="transport-audio-panel">
         <div class="transport-audio-header">AUDIO MIXER</div>
         <div class="transport-audio-body">
+          <div class="vu-meter-head">
+            <span class="vu-meter-title">PGM LEVEL</span>
+            <span class="vu-db" id="vu-db">-- dB</span>
+          </div>
           <div class="vu-meter" id="vu-meter">
             <div class="vu-meter-fill" id="vu-meter-fill"></div>
+            <div class="vu-meter-peak" id="vu-meter-peak" hidden></div>
+          </div>
+          <div class="vu-meter-scale">
+            <span>-60</span><span>-40</span><span>-20</span><span>-9</span><span>0</span>
           </div>
           <div class="transport-audio-row">
             <div class="transport-audio-label">MAIN</div>
@@ -146,6 +155,14 @@
         <button id="btn-next" class="hw-btn" title="Next (Right Arrow)">
           <svg viewBox="0 0 24 24"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
         </button>
+      </div>
+
+      <div class="pad-panel">
+        <div class="pad-panel-header">
+          <span>FIRE PADS</span>
+          <span class="pad-panel-hint">KEYS 1-9 · SHIFT = CUE</span>
+        </div>
+        <div class="pad-grid" id="pad-grid"></div>
       </div>
 
       <div class="danger-zone">
@@ -193,6 +210,9 @@
 
         <div class="media-grid" id="media-grid">
           <!-- Clips injected here -->
+        </div>
+        <div class="watchfolder-hint" id="watchfolder-hint" hidden>
+          WATCH FOLDER ACTIVE — files copied into the clips directory (SMB / USB) are ingested automatically
         </div>
       </div>
     </section>
@@ -401,6 +421,19 @@
           <label>SYSTEM UPDATE</label>
           <div class="settings-update-meta" id="update-meta">Checking update status...</div>
           <button id="btn-run-update" class="action-btn">UPDATE NOW</button>
+        </div>
+        <div class="form-row settings-update-row">
+          <label>KEYBOARD SHORTCUTS</label>
+          <div class="shortcuts-legend">
+            <div><kbd>Space</kbd> Play / Pause</div>
+            <div><kbd>Esc</kbd> Stop</div>
+            <div><kbd>Enter</kbd> Cut to black</div>
+            <div><kbd>←</kbd> <kbd>→</kbd> Previous / next clip</div>
+            <div><kbd>1</kbd>–<kbd>9</kbd> Fire pad N</div>
+            <div><kbd>Shift</kbd>+<kbd>1-9</kbd> Cue pad N</div>
+            <div><kbd>F1</kbd> Grid view</div>
+            <div><kbd>F2</kbd> List view</div>
+          </div>
         </div>
         <div class="form-row settings-update-row">
           <label>LIBRARY MAINTENANCE</label>

@@ -14,6 +14,7 @@ from app.player.mpv_controller import MPVController
 from app.services.network_info import NetworkInfoService
 from app.services.output_manager import OutputManager
 from app.services.standby_slate import StandbySlateService
+from app.services.system_vitals import read_system_vitals
 
 # Forward-only speed window. Reverse playback is intentionally unsupported: mpv
 # backward decode needs a large demuxer back-cache, which a Pi-class SBC cannot
@@ -61,8 +62,11 @@ class DeckController:
         self._media_publish_task: asyncio.Task | None = None
         self._last_health_payload: Dict[str, Any] | None = None
         self._last_safety_payload: Dict[str, Any] | None = None
+        self.watch_folder = None
+        self._started_at: float | None = None
 
     async def start(self) -> None:
+        self._started_at = time.monotonic()
         self._ticker_task = asyncio.create_task(self._ticker())
         self._health_task = asyncio.create_task(self._health_reporter())
         asyncio.create_task(self._enter_standby(ensure_player=True))
@@ -717,6 +721,9 @@ class DeckController:
             'media_processing': media_processing,
             'storage_free_bytes': free_bytes,
             'storage_total_bytes': total_bytes,
+            'watch_folder': self.watch_folder.snapshot() if self.watch_folder else {'enabled': False},
+            'system': read_system_vitals(),
+            'uptime_minutes': int((time.monotonic() - self._started_at) / 60) if self._started_at else 0,
         }
 
     async def export_snapshot(self) -> Dict[str, Any]:

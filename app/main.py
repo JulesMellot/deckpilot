@@ -33,6 +33,7 @@ def create_application() -> tuple[AppConfig, object]:
     controller = DeckController(config, state, clip_store, playlist_store, output_manager, network_info, player, standby_slate)
     server = HyperDeckServer(config, state, controller)
     watch_folder = WatchFolderService(config, state, controller)
+    controller.watch_folder = watch_folder
     app = build_app(controller, state, clip_store, playlist_store, update_manager)
 
     @app.on_event('startup')

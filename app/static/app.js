@@ -34,6 +34,8 @@ const state = {
   websocketConnected: false,
   audioLevels: new Map(),
   audioLevelsFetching: new Set(),
+  vuPeakPct: 0,
+  vuPeakAt: 0,
 };
 
 const MEDIA_VIRTUALIZATION_THRESHOLD = 120;
@@ -56,6 +58,11 @@ const DOM = {
   nextClipCountdown: document.getElementById('next-clip-countdown'),
   vuMeter: document.getElementById('vu-meter'),
   vuMeterFill: document.getElementById('vu-meter-fill'),
+  vuMeterPeak: document.getElementById('vu-meter-peak'),
+  vuDb: document.getElementById('vu-db'),
+  liveClipMeta: document.getElementById('live-clip-meta'),
+  padGrid: document.getElementById('pad-grid'),
+  watchfolderHint: document.getElementById('watchfolder-hint'),
   liveTimecode: document.getElementById('live-timecode'),
   liveRemaining: document.getElementById('live-remaining'),
   liveDuration: document.getElementById('live-duration'),
@@ -186,6 +193,14 @@ function formatRemainingClock(seconds) {
 function formatEta(seconds) {
   if (seconds === null || seconds === undefined) return 'ETA --';
   return `ETA ${formatClock(seconds)}`;
+}
+
+function formatUptimeMinutes(minutes) {
+  const total = Math.max(0, Number(minutes || 0));
+  if (total < 60) return `${total}m`;
+  const hours = Math.floor(total / 60);
+  if (hours < 24) return `${hours}h ${total % 60}m`;
+  return `${Math.floor(hours / 24)}d ${hours % 24}h`;
 }
 
 function formatDateTime(timestampSeconds) {
@@ -1040,6 +1055,8 @@ function renderTransport(transport, clips) {
   renderTransportMarks(transport, canSeek, total);
   renderNextClip(transport);
   renderVuMeter(transport, currentClip);
+  renderPads(transport);
+  renderLiveClipMeta(transport, currentClip);
   DOM.liveTimecode.classList.remove('warning', 'danger', 'blink');
   if (isPlaying && transport.total_seconds > 0) {
     if (remaining <= 5) {
@@ -1053,6 +1070,25 @@ function renderTransport(transport, clips) {
   DOM.btnPlayPlaylist.classList.toggle('active', Boolean(transport.playlist_mode && transport.status === 'play'));
   DOM.btnLoopPlaylist.classList.toggle('active', Boolean(transport.playlist_loop));
   DOM.btnLoopPlaylist.textContent = transport.playlist_loop ? 'LOOP ON' : 'LOOP';
+}
+
+function renderLiveClipMeta(transport, clip) {
+  if (!clip) {
+    DOM.liveClipMeta.textContent = 'STANDBY';
+    return;
+  }
+  const playlistTotal = (state.snapshot?.playlist?.items || []).length;
+  const parts = [
+    `PAD ${clip.deck_id}`,
+    clipResolutionLabel(clip),
+    clip.media_kind === 'video' ? `${clip.framerate}fps` : 'STILL',
+    clip.codec && clip.codec !== 'unknown' ? clip.codec.toUpperCase() : null,
+    Number(transport.playback_speed_percent || 100) !== 100 ? `SPEED ${transport.playback_speed_percent}%` : null,
+    transport.loop ? 'LOOP' : null,
+    transport.playlist_mode && transport.playlist_position ? `ITEM ${transport.playlist_position}/${playlistTotal}` : null,
+    clip.tags ? `#${clip.tags}` : null,
+  ].filter(Boolean);
+  DOM.liveClipMeta.textContent = parts.join(' · ');
 }
 
 function renderNextClip(transport) {
@@ -1109,6 +1145,7 @@ function renderVuMeter(transport, currentClip) {
   const playing = transport.status === 'play' && !transport.paused;
   DOM.vuMeter.classList.toggle('muted', Boolean(state.snapshot?.audio?.muted));
   let pct = 0;
+  let effectiveDb = null;
   if (playing && currentClip) {
     const levels = ensureAudioLevels(transport.clip_id, currentClip);
     if (levels && levels.length) {
@@ -1116,11 +1153,61 @@ function renderVuMeter(transport, currentClip) {
       const db = Number(levels[index]);
       const volume = Number(state.snapshot?.audio?.volume ?? 100);
       const gainDb = volume > 0 ? 20 * Math.log10(volume / 100) : -60;
-      pct = Math.max(0, Math.min(100, ((db + gainDb + 60) / 60) * 100));
+      effectiveDb = Math.max(-60, Math.min(0, db + gainDb));
+      pct = ((effectiveDb + 60) / 60) * 100;
     }
   }
-  // The fill is a right-anchored shutter over the fixed color gradient.
-  DOM.vuMeterFill.style.width = `${100 - pct}%`;
+  DOM.vuMeterFill.style.clipPath = `inset(0 ${100 - pct}% 0 0)`;
+
+  const now = Date.now();
+  if (pct >= state.vuPeakPct || now - state.vuPeakAt > 2000) {
+    state.vuPeakPct = pct;
+    state.vuPeakAt = now;
+  }
+  DOM.vuMeterPeak.hidden = state.vuPeakPct <= 0.5;
+  if (!DOM.vuMeterPeak.hidden) {
+    DOM.vuMeterPeak.style.left = `calc(${state.vuPeakPct}% - 1px)`;
+  }
+
+  if (effectiveDb === null) {
+    DOM.vuDb.textContent = playing && currentClip?.has_audio_levels ? '...' : '-- dB';
+    DOM.vuDb.classList.remove('is-hot', 'is-clip');
+  } else {
+    DOM.vuDb.textContent = `${effectiveDb.toFixed(0)} dB`;
+    DOM.vuDb.classList.toggle('is-clip', effectiveDb > -3);
+    DOM.vuDb.classList.toggle('is-hot', effectiveDb > -9 && effectiveDb <= -3);
+  }
+}
+
+function renderPads(transport = state.snapshot?.transport) {
+  const clips = state.snapshot?.clips || [];
+  if (!DOM.padGrid.childElementCount) {
+    const fragment = document.createDocumentFragment();
+    for (let pad = 1; pad <= 9; pad += 1) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'pad-btn';
+      button.dataset.pad = String(pad);
+      button.innerHTML = '<span class="pad-btn-key"></span><span class="pad-btn-name"></span>';
+      fragment.appendChild(button);
+    }
+    DOM.padGrid.appendChild(fragment);
+  }
+  const activeClipId = transport?.clip_id;
+  const isPlaying = transport?.status === 'play';
+  for (const button of DOM.padGrid.children) {
+    const pad = Number(button.dataset.pad);
+    const clip = clips[pad - 1] || null;
+    const keyNode = button.firstElementChild;
+    const nameNode = button.lastElementChild;
+    keyNode.textContent = String(pad);
+    nameNode.textContent = clip ? clip.name : '--';
+    button.disabled = !clip;
+    button.title = clip ? `${clip.name} — click to fire, Shift+click to cue` : 'Empty pad';
+    const isActive = Boolean(clip && clip.deck_id === activeClipId);
+    button.classList.toggle('active', isActive && isPlaying);
+    button.classList.toggle('cued', isActive && !isPlaying);
+  }
 }
 
 function renderTransportSpeed(transport, canSeek) {
@@ -1194,6 +1281,7 @@ function renderPlaybackCollections() {
   normalizeSelection();
   renderPlaylist(state.snapshot?.playlist || { playlist: null, items: [] }, state.snapshot?.transport?.clip_id);
   renderMediaGrid(filteredClips(), state.snapshot?.transport?.clip_id, state.snapshot?.transport?.status);
+  renderPads();
 }
 
 function syncPlaylistVisualState(activeClipId = state.snapshot?.transport?.clip_id) {
@@ -1342,6 +1430,24 @@ function renderHealth(health, safety) {
     const throughput = mediaProcessing.clips_per_second ? `${mediaProcessing.clips_per_second} clip/s` : 'warming up';
     lines.push(`Media processing: queued ${mediaProcessing.pending || 0} | running ${mediaProcessing.processing || 0} | errors ${mediaProcessing.error || 0} | ${eta} | ${throughput}`);
   }
+  const vitals = health.system || {};
+  const vitalsParts = [];
+  if (vitals.cpu_temp_c != null) vitalsParts.push(`${vitals.cpu_temp_c}°C`);
+  if (vitals.load_1m != null) vitalsParts.push(`load ${vitals.load_1m}`);
+  if (vitals.mem_used_percent != null) vitalsParts.push(`RAM ${vitals.mem_used_percent}%`);
+  if (health.uptime_minutes != null) vitalsParts.push(`up ${formatUptimeMinutes(health.uptime_minutes)}`);
+  if (vitalsParts.length) {
+    lines.push(`System: ${vitalsParts.join(' | ')}`);
+  }
+  const watchFolder = health.watch_folder || {};
+  if (watchFolder.enabled) {
+    const lastIngest = watchFolder.last_ingest_at ? formatDateTime(watchFolder.last_ingest_at) : 'none yet';
+    const pending = watchFolder.pending_files ? ` | ${watchFolder.pending_files} incoming` : '';
+    lines.push(`Watch folder: ON (${Math.round(watchFolder.interval_seconds)}s) | ${watchFolder.ingest_count} ingest(s) | last ${lastIngest}${pending}`);
+  } else {
+    lines.push('Watch folder: OFF');
+  }
+  DOM.watchfolderHint.hidden = !watchFolder.enabled;
   if (health.last_error) {
     lines.push(`Last error: ${health.last_error}`);
   } else if (health.player_error) {
@@ -1891,6 +1997,11 @@ bindAsync(DOM.btnMarkOut, 'click', async () => {
 bindAsync(DOM.btnMarkClear, 'click', async () => {
   await commitClipMarks({ markIn: 0, markOut: 0 });
 }, 'Marks Error');
+bindAsync(DOM.padGrid, 'click', async (event) => {
+  const button = event.target.closest('.pad-btn');
+  if (!button || button.disabled) return;
+  await firePadClip(Number(button.dataset.pad), event.shiftKey);
+}, 'Playback Error');
 bindAsync(DOM.btnPrev, 'click', async () => playAdjacentClip(-1), 'Playback Error');
 bindAsync(DOM.btnNext, 'click', async () => playAdjacentClip(1), 'Playback Error');
 bindAsync(DOM.btnBlack, 'click', async () => {

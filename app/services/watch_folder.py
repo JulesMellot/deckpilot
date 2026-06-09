@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
-from typing import Dict, Tuple
+import time
+from typing import Any, Dict, Tuple
 
 from app.core.config import AppConfig
 
@@ -28,6 +29,19 @@ class WatchFolderService:
         self._task: asyncio.Task | None = None
         self._last_scan: Snapshot | None = None
         self._ingested: Snapshot | None = None
+        self.last_ingest_at: float | None = None
+        self.ingest_count: int = 0
+        self.pending_files: int = 0
+
+    def snapshot(self) -> Dict[str, Any]:
+        return {
+            'enabled': self.enabled,
+            'interval_seconds': self.interval,
+            'path': self.config.clips_dir,
+            'last_ingest_at': self.last_ingest_at,
+            'ingest_count': self.ingest_count,
+            'pending_files': self.pending_files,
+        }
 
     async def start(self) -> None:
         if not self.enabled or self._task:
@@ -58,11 +72,17 @@ class WatchFolderService:
         scan = await asyncio.to_thread(self._scan)
         previous = self._last_scan
         self._last_scan = scan
+        if self._ingested is not None:
+            self.pending_files = sum(1 for name in scan if name not in self._ingested)
         if previous is None or scan != previous or scan == self._ingested:
             return False
         added = [name for name in scan if self._ingested is None or name not in self._ingested]
         removed = [name for name in (self._ingested or {}) if name not in scan]
         self._ingested = scan
+        self.pending_files = 0
+        if added or removed:
+            self.last_ingest_at = time.time()
+            self.ingest_count += 1
         if added:
             await self.state.add_log('info', 'media', f'Watch folder: ingesting {len(added)} new file(s): {", ".join(sorted(added)[:5])}')
         if removed:

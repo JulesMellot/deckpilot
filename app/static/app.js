@@ -32,6 +32,8 @@ const state = {
   playlistVirtualKey: null,
   playlistVirtualCheckScheduled: false,
   websocketConnected: false,
+  audioLevels: new Map(),
+  audioLevelsFetching: new Set(),
 };
 
 const MEDIA_VIRTUALIZATION_THRESHOLD = 120;
@@ -49,6 +51,11 @@ const DOM = {
   btnOpenSettings: document.getElementById('btn-open-settings'),
   tallyBar: document.getElementById('tally-bar'),
   liveClipName: document.getElementById('live-clip-name'),
+  nextClipBar: document.getElementById('next-clip-bar'),
+  nextClipName: document.getElementById('next-clip-name'),
+  nextClipCountdown: document.getElementById('next-clip-countdown'),
+  vuMeter: document.getElementById('vu-meter'),
+  vuMeterFill: document.getElementById('vu-meter-fill'),
   liveTimecode: document.getElementById('live-timecode'),
   liveRemaining: document.getElementById('live-remaining'),
   liveDuration: document.getElementById('live-duration'),
@@ -58,6 +65,8 @@ const DOM = {
   transportSeek: document.getElementById('transport-seek'),
   btnSeekBack: document.getElementById('btn-seek-back'),
   btnSeekForward: document.getElementById('btn-seek-forward'),
+  transportSpeedLabel: document.getElementById('transport-speed-label'),
+  transportSpeedButtons: document.getElementById('transport-speed-buttons'),
   scrubMarkIn: document.getElementById('scrub-mark-in'),
   scrubMarkOut: document.getElementById('scrub-mark-out'),
   btnMarkIn: document.getElementById('btn-mark-in'),
@@ -107,6 +116,11 @@ const DOM = {
   previewMarkInValue: document.getElementById('preview-mark-in-value'),
   previewMarkOutValue: document.getElementById('preview-mark-out-value'),
   previewMarkTrimValue: document.getElementById('preview-mark-trim-value'),
+  previewStillDuration: document.getElementById('preview-still-duration'),
+  previewDurationInput: document.getElementById('preview-duration-input'),
+  btnPreviewDuration: document.getElementById('btn-preview-duration'),
+  previewTagsValue: document.getElementById('preview-tags-value'),
+  btnPreviewTags: document.getElementById('btn-preview-tags'),
   playlistSelect: document.getElementById('playlist-select'),
   playlistCount: document.getElementById('playlist-count'),
   playlistItems: document.getElementById('playlist-items'),
@@ -146,6 +160,10 @@ const DOM = {
   btnSettingsClose: document.getElementById('btn-settings-close'),
   updateMeta: document.getElementById('update-meta'),
   btnRunUpdate: document.getElementById('btn-run-update'),
+  btnExportLibrary: document.getElementById('btn-export-library'),
+  btnImportLibrary: document.getElementById('btn-import-library'),
+  btnBackupDb: document.getElementById('btn-backup-db'),
+  importFileInput: document.getElementById('import-file-input'),
 };
 
 const Templates = {
@@ -489,6 +507,7 @@ function updateMediaNode(node, clip, activeClipId, status) {
     clipResolutionLabel(clip),
     clip.media_kind === 'video' ? `${clip.framerate}fps` : null,
     clip.is_vertical ? 'vertical' : null,
+    clip.tags ? `#${clip.tags}` : null,
     processingLabel || null,
   ].filter(Boolean);
 
@@ -535,12 +554,21 @@ function getOrCreatePlaylistNode(playlistId, item) {
   return state.playlistNodeCache.get(key);
 }
 
+const END_BEHAVIOR_LABELS = { next: 'AUTO', stop: 'STOP', hold: 'HOLD', loop: 'LOOP' };
+const END_BEHAVIOR_CYCLE = ['next', 'stop', 'hold', 'loop'];
+
 function updatePlaylistNode(node, item, activeClipId) {
   node.dataset.clipId = item.clip_id;
   node.dataset.position = item.position;
   node.querySelector('.playlist-item-pos').textContent = String(item.position).padStart(2, '0');
   node.querySelector('.playlist-item-name').textContent = item.clip_name;
   node.querySelector('.playlist-item-time').textContent = item.duration_timecode.substring(0, 8);
+  const behavior = item.end_behavior || 'next';
+  const endNode = node.querySelector('.playlist-item-end');
+  endNode.textContent = END_BEHAVIOR_LABELS[behavior] || 'AUTO';
+  endNode.classList.toggle('is-stop', behavior === 'stop');
+  endNode.classList.toggle('is-hold', behavior === 'hold');
+  endNode.classList.toggle('is-loop', behavior === 'loop');
   node.classList.toggle('active', item.clip_id === activeClipId);
   node.classList.toggle('selected', item.position === state.selectedPlaylistPosition);
 }
@@ -671,8 +699,45 @@ document.addEventListener('keydown', (e) => {
       e.preventDefault();
       void runShortcut(() => playAdjacentClip(1), 'Playback Error');
       break;
+    case 'F1':
+      e.preventDefault();
+      setMediaView('grid');
+      break;
+    case 'F2':
+      e.preventDefault();
+      setMediaView('list');
+      break;
+    default: {
+      const padMatch = /^(?:Digit|Numpad)([1-9])$/.exec(e.code);
+      if (padMatch) {
+        e.preventDefault();
+        void runShortcut(() => firePadClip(Number(padMatch[1]), e.shiftKey), 'Playback Error');
+      }
+    }
   }
 });
+
+function firePadClip(padNumber, cueOnly) {
+  const clips = state.snapshot?.clips || [];
+  const clip = clips[padNumber - 1];
+  if (!clip) return Promise.resolve();
+  state.selectedClipId = clip.deck_id;
+  syncMediaGridVisualState();
+  if (cueOnly) {
+    return cueClip(clip.deck_id);
+  }
+  return api(`/api/clips/${clip.deck_id}/play`, { method: 'POST' });
+}
+
+function setMediaView(view) {
+  if (state.mediaView === view) return;
+  state.mediaView = view;
+  DOM.dropzone.scrollTop = 0;
+  renderMediaToolbar();
+  if (state.snapshot) {
+    renderMediaGrid(filteredClips(), state.snapshot.transport?.clip_id, state.snapshot.transport?.status);
+  }
+}
 
 DOM.transportSeek.addEventListener('input', (event) => {
   state.transportSeekDragging = true;
@@ -799,7 +864,7 @@ function filteredClips() {
     if (folder !== 'All' && clip.folder !== folder) return false;
     if (mediaType !== 'all' && clip.media_kind !== mediaType) return false;
     if (!searchTerm) return true;
-    const haystack = `${clip.name} ${clip.filename} ${clip.folder} ${clip.codec} ${clip.media_kind}`.toLowerCase();
+    const haystack = `${clip.name} ${clip.filename} ${clip.folder} ${clip.codec} ${clip.media_kind} ${clip.tags || ''}`.toLowerCase();
     return haystack.includes(searchTerm);
   });
 }
@@ -971,7 +1036,10 @@ function renderTransport(transport, clips) {
   DOM.transportSeek.disabled = !canSeek;
   DOM.btnSeekBack.disabled = !canSeek;
   DOM.btnSeekForward.disabled = !canSeek;
+  renderTransportSpeed(transport, canSeek);
   renderTransportMarks(transport, canSeek, total);
+  renderNextClip(transport);
+  renderVuMeter(transport, currentClip);
   DOM.liveTimecode.classList.remove('warning', 'danger', 'blink');
   if (isPlaying && transport.total_seconds > 0) {
     if (remaining <= 5) {
@@ -985,6 +1053,84 @@ function renderTransport(transport, clips) {
   DOM.btnPlayPlaylist.classList.toggle('active', Boolean(transport.playlist_mode && transport.status === 'play'));
   DOM.btnLoopPlaylist.classList.toggle('active', Boolean(transport.playlist_loop));
   DOM.btnLoopPlaylist.textContent = transport.playlist_loop ? 'LOOP ON' : 'LOOP';
+}
+
+function renderNextClip(transport) {
+  const items = state.snapshot?.playlist?.items || [];
+  const isRunning = Boolean(transport.playlist_mode) && transport.status === 'play';
+  if (!isRunning || !items.length) {
+    DOM.nextClipBar.hidden = true;
+    return;
+  }
+  const current = items.find((item) => item.clip_id === transport.clip_id) || null;
+  const behavior = current?.end_behavior || 'next';
+  const position = current?.position || Number(transport.playlist_position || 0);
+  let nextItem = items.find((item) => item.position === position + 1) || null;
+  if (!nextItem && transport.playlist_loop) nextItem = items[0] || null;
+  const remaining = Math.max(0, effectiveOutSeconds(transport) - displayedTransportElapsed(transport));
+  DOM.nextClipBar.hidden = false;
+  if (transport.loop || behavior === 'stop' || behavior === 'hold') {
+    DOM.nextClipBar.classList.add('is-terminal');
+    DOM.nextClipName.textContent = transport.loop
+      ? 'LOOPING CURRENT CLIP'
+      : (behavior === 'hold' ? 'HOLD ON LAST FRAME' : 'STOP AT END');
+    DOM.nextClipCountdown.textContent = transport.loop ? '∞' : formatRemainingClock(remaining);
+    return;
+  }
+  if (nextItem) {
+    DOM.nextClipBar.classList.remove('is-terminal');
+    DOM.nextClipName.textContent = nextItem.clip_name;
+  } else {
+    DOM.nextClipBar.classList.add('is-terminal');
+    DOM.nextClipName.textContent = 'END OF PLAYLIST';
+  }
+  DOM.nextClipCountdown.textContent = formatRemainingClock(remaining);
+}
+
+function ensureAudioLevels(clipId, clip) {
+  if (!clipId || !clip?.has_audio_levels) return null;
+  if (state.audioLevels.has(clipId)) return state.audioLevels.get(clipId);
+  if (!state.audioLevelsFetching.has(clipId)) {
+    state.audioLevelsFetching.add(clipId);
+    api(`/api/clips/${clipId}/levels`)
+      .then((payload) => {
+        if (state.audioLevels.size > 8) {
+          state.audioLevels.delete(state.audioLevels.keys().next().value);
+        }
+        state.audioLevels.set(clipId, payload.levels || []);
+      })
+      .catch(() => {})
+      .finally(() => state.audioLevelsFetching.delete(clipId));
+  }
+  return null;
+}
+
+function renderVuMeter(transport, currentClip) {
+  const playing = transport.status === 'play' && !transport.paused;
+  DOM.vuMeter.classList.toggle('muted', Boolean(state.snapshot?.audio?.muted));
+  let pct = 0;
+  if (playing && currentClip) {
+    const levels = ensureAudioLevels(transport.clip_id, currentClip);
+    if (levels && levels.length) {
+      const index = Math.min(levels.length - 1, Math.max(0, Math.floor(Number(transport.elapsed_seconds || 0))));
+      const db = Number(levels[index]);
+      const volume = Number(state.snapshot?.audio?.volume ?? 100);
+      const gainDb = volume > 0 ? 20 * Math.log10(volume / 100) : -60;
+      pct = Math.max(0, Math.min(100, ((db + gainDb + 60) / 60) * 100));
+    }
+  }
+  // The fill is a right-anchored shutter over the fixed color gradient.
+  DOM.vuMeterFill.style.width = `${100 - pct}%`;
+}
+
+function renderTransportSpeed(transport, canSeek) {
+  const percent = Math.max(0, Number(transport.playback_speed_percent || 100));
+  DOM.transportSpeedLabel.textContent = `SPEED ${percent}%`;
+  DOM.transportSpeedLabel.classList.toggle('is-offspeed', percent !== 100);
+  for (const button of DOM.transportSpeedButtons.children) {
+    button.disabled = !canSeek;
+    button.classList.toggle('active', Number(button.dataset.speed) === percent);
+  }
 }
 
 function renderTransportMarks(transport, canSeek, total) {
@@ -1030,6 +1176,18 @@ function renderLogs(logs) {
   const logText = (logs || []).slice(-80).map((entry) => `[${entry.created_at.split('T')[1].substring(0, 8)}] ${entry.message}`).join('\n');
   DOM.terminalLogs.textContent = logText;
   DOM.terminalLogs.scrollTop = DOM.terminalLogs.scrollHeight;
+}
+
+// An ATEM polling the deck produces a log line per protocol command; batch
+// the terminal rewrites instead of touching the DOM for every line.
+let logsRenderPending = false;
+function scheduleLogsRender() {
+  if (logsRenderPending) return;
+  logsRenderPending = true;
+  window.setTimeout(() => {
+    logsRenderPending = false;
+    renderLogs(state.snapshot?.logs || []);
+  }, 250);
 }
 
 function renderPlaybackCollections() {
@@ -1477,6 +1635,8 @@ function renderPreview() {
   if (!clip) {
     DOM.previewTitle.textContent = 'Aucun clip selectionne';
     DOM.previewSubtitle.textContent = 'Selectionne un clip pour le previsualiser dans le navigateur.';
+    DOM.previewStillDuration.hidden = true;
+    DOM.previewTagsValue.textContent = '--';
     DOM.previewImage.hidden = true;
     DOM.previewImage.removeAttribute('src');
     DOM.previewVideo.removeAttribute('src');
@@ -1495,6 +1655,12 @@ function renderPreview() {
     orientation,
   ].filter(Boolean);
   DOM.previewSubtitle.textContent = subtitleParts.join(' | ');
+  DOM.previewTagsValue.textContent = clip.tags || '--';
+  const isImage = clip.media_kind === 'image';
+  DOM.previewStillDuration.hidden = !isImage;
+  if (isImage && document.activeElement !== DOM.previewDurationInput) {
+    DOM.previewDurationInput.value = String(Math.round((clip.duration_seconds || 10) * 10) / 10);
+  }
   const nextSrc = mediaSourceUrl(clip);
   if (clip.media_kind === 'image') {
     DOM.previewVideo.pause();
@@ -1708,6 +1874,14 @@ bindAsync(DOM.btnSeekBack, 'click', async () => {
 bindAsync(DOM.btnSeekForward, 'click', async () => {
   await commitTransportSeek(displayedTransportElapsed(state.snapshot?.transport) + 10);
 }, 'Playback Error');
+bindAsync(DOM.transportSpeedButtons, 'click', async (event) => {
+  const button = event.target.closest('.speed-btn');
+  if (!button || button.disabled) return;
+  await api('/api/transport/speed', {
+    method: 'POST',
+    body: JSON.stringify({ percent: Number(button.dataset.speed) }),
+  });
+}, 'Playback Error');
 bindAsync(DOM.btnMarkIn, 'click', async () => {
   await commitClipMarks({ markIn: displayedTransportElapsed(state.snapshot?.transport) });
 }, 'Marks Error');
@@ -1806,10 +1980,40 @@ bindAsync(DOM.btnMute, 'click', async () => {
 }, 'Audio Error');
 bindAsync(DOM.playlistItems, 'click', async (event) => {
   const removeNode = event.target.closest('.playlist-item-remove');
+  const endNode = event.target.closest('.playlist-item-end');
+  const moveNode = event.target.closest('.playlist-item-move');
   const playlistNode = event.target.closest('.playlist-item');
   if (!playlistNode) return;
   const item = playlistItemFromPosition(playlistNode.dataset.position);
   if (!item) return;
+  if (endNode) {
+    event.stopPropagation();
+    const playlistId = state.snapshot?.playlist?.playlist?.id;
+    if (!playlistId) return;
+    const nextBehavior = END_BEHAVIOR_CYCLE[(END_BEHAVIOR_CYCLE.indexOf(item.end_behavior || 'next') + 1) % END_BEHAVIOR_CYCLE.length];
+    await api(`/api/playlists/${playlistId}/items/${item.position}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ end_behavior: nextBehavior }),
+    });
+    return;
+  }
+  if (moveNode) {
+    event.stopPropagation();
+    const playlistId = state.snapshot?.playlist?.playlist?.id;
+    if (!playlistId) return;
+    const items = state.snapshot?.playlist?.items || [];
+    const positions = items.map((entry) => entry.position);
+    const index = positions.indexOf(item.position);
+    const target = index + (moveNode.dataset.role === 'move-up' ? -1 : 1);
+    if (index < 0 || target < 0 || target >= positions.length) return;
+    [positions[index], positions[target]] = [positions[target], positions[index]];
+    state.selectedPlaylistPosition = target + 1;
+    await api(`/api/playlists/${playlistId}/items/reorder`, {
+      method: 'POST',
+      body: JSON.stringify({ positions }),
+    });
+    return;
+  }
   if (removeNode) {
     event.stopPropagation();
     const playlistId = state.snapshot?.playlist?.playlist?.id;
@@ -1932,10 +2136,7 @@ DOM.btnBackAll.addEventListener('click', () => {
   renderMediaGrid(filteredClips(), state.snapshot.transport.clip_id, state.snapshot.transport.status);
 });
 DOM.btnToggleMediaView.addEventListener('click', () => {
-  state.mediaView = state.mediaView === 'grid' ? 'list' : 'grid';
-  DOM.dropzone.scrollTop = 0;
-  renderMediaToolbar();
-  renderMediaGrid(filteredClips(), state.snapshot.transport.clip_id, state.snapshot.transport.status);
+  setMediaView(state.mediaView === 'grid' ? 'list' : 'grid');
 });
 bindAsync(DOM.btnNewFolder, 'click', async () => {
   const name = await requestText({
@@ -1995,6 +2196,29 @@ bindAsync(DOM.btnPreviewCue, 'click', async () => {
   await cueClip(clip.deck_id);
 }, 'Preview Error');
 bindAsync(DOM.btnPreviewAddPlaylist, 'click', async () => addSelectedClipToPlaylist(), 'Playlist Error');
+bindAsync(DOM.btnPreviewDuration, 'click', async () => {
+  const clip = getSelectedClip();
+  if (!clip || clip.media_kind !== 'image') return;
+  const seconds = Number(DOM.previewDurationInput.value || 0);
+  if (!(seconds > 0)) {
+    await showNotice('Still Duration', 'La durée doit être un nombre de secondes positif.');
+    return;
+  }
+  await api(`/api/clips/${clip.deck_id}/duration`, { method: 'PATCH', body: JSON.stringify({ seconds }) });
+}, 'Media Error');
+bindAsync(DOM.btnPreviewTags, 'click', async () => {
+  const clip = getSelectedClip();
+  if (!clip) return;
+  const value = await openAppDialog({
+    title: 'Edit Tags',
+    message: `Tags de "${clip.name}" (séparés par des virgules, vide pour effacer) :`,
+    inputValue: clip.tags || '',
+    showInput: true,
+    confirmLabel: 'SAVE',
+  });
+  if (typeof value !== 'string') return;
+  await api(`/api/clips/${clip.deck_id}/tags`, { method: 'PATCH', body: JSON.stringify({ tags: value }) });
+}, 'Media Error');
 bindAsync(DOM.btnPreviewMarkIn, 'click', async () => commitPreviewMark('in'), 'Marks Error');
 bindAsync(DOM.btnPreviewMarkOut, 'click', async () => commitPreviewMark('out'), 'Marks Error');
 bindAsync(DOM.btnPreviewMarkClear, 'click', async () => commitPreviewMark('clear'), 'Marks Error');
@@ -2039,6 +2263,34 @@ bindAsync(DOM.btnAddSelectedPlaylist, 'click', async () => addSelectedClipToPlay
 bindAsync(DOM.btnClearPlaylist, 'click', async () => {
   await clearCurrentPlaylist();
 }, 'Playlist Error');
+DOM.btnExportLibrary.addEventListener('click', () => {
+  window.open('/api/system/export', '_blank');
+});
+DOM.btnBackupDb.addEventListener('click', () => {
+  window.open('/api/system/backup', '_blank');
+});
+DOM.btnImportLibrary.addEventListener('click', () => DOM.importFileInput.click());
+bindAsync(DOM.importFileInput, 'change', async () => {
+  const file = DOM.importFileInput.files?.[0];
+  DOM.importFileInput.value = '';
+  if (!file) return;
+  const text = await file.text();
+  let payload;
+  try {
+    payload = JSON.parse(text);
+  } catch (error) {
+    throw new Error('Fichier JSON invalide.');
+  }
+  const confirmed = await requestConfirm({
+    title: 'Import Library',
+    message: 'Appliquer les noms, dossiers, marks, tags et playlists de ce fichier ? Les réglages actuels des clips correspondants seront remplacés.',
+    confirmLabel: 'IMPORT',
+  });
+  if (!confirmed) return;
+  const result = await api('/api/system/import', { method: 'POST', body: JSON.stringify(payload) });
+  await showNotice('Import Complete', `${result.clips} clip(s) et ${result.playlists} playlist(s) mis à jour.`);
+  await refresh();
+}, 'Import Error');
 DOM.appDialogBackdrop.addEventListener('click', (event) => {
   if (event.target === DOM.appDialogBackdrop) {
     closeAppDialog(null);
@@ -2167,8 +2419,11 @@ function setupWebSocket() {
       return;
     }
     if (message.type === 'log') {
-      state.snapshot.logs = [...(state.snapshot.logs || []), message.payload].slice(-200);
-      renderLogs(state.snapshot.logs);
+      const logs = state.snapshot.logs || [];
+      logs.push(message.payload);
+      if (logs.length > 200) logs.splice(0, logs.length - 200);
+      state.snapshot.logs = logs;
+      scheduleLogsRender();
       return;
     }
   });

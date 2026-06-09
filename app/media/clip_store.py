@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import json
 import shutil
 import sqlite3
 import subprocess
@@ -34,6 +35,16 @@ class ClipStore:
         self._processing_batch_started_at: float | None = None
         self._processing_batch_total = 0
         self._processing_batch_completed = 0
+        # Hot-path cache: the clip list is read every transport tick and every
+        # health report, so it lives in memory and is invalidated on writes.
+        self._clips_cache: list[ClipRecord] | None = None
+        self._clips_index: dict[int, ClipRecord] = {}
+        self._clips_cache_generation = 0
+
+    def _invalidate_clips_cache(self) -> None:
+        self._clips_cache_generation += 1
+        self._clips_cache = None
+        self._clips_index = {}
 
     async def initialize(self) -> None:
         await asyncio.to_thread(self._initialize_sync)
@@ -72,10 +83,14 @@ class ClipStore:
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
+        # WAL + NORMAL: far fewer fsyncs per write — important on SD cards.
+        conn.execute('PRAGMA busy_timeout = 5000')
+        conn.execute('PRAGMA synchronous = NORMAL')
         return conn
 
     def _initialize_sync(self) -> None:
         with self._connect() as conn:
+            conn.execute('PRAGMA journal_mode = WAL')
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS clips (
@@ -129,9 +144,14 @@ class ClipStore:
                 conn.execute("ALTER TABLE clips ADD COLUMN mark_in_seconds REAL NOT NULL DEFAULT 0")
             if 'mark_out_seconds' not in columns:
                 conn.execute("ALTER TABLE clips ADD COLUMN mark_out_seconds REAL NOT NULL DEFAULT 0")
+            if 'tags' not in columns:
+                conn.execute("ALTER TABLE clips ADD COLUMN tags TEXT NOT NULL DEFAULT ''")
+            if 'audio_levels' not in columns:
+                conn.execute("ALTER TABLE clips ADD COLUMN audio_levels TEXT")
             conn.execute("INSERT OR IGNORE INTO media_folders (name) VALUES ('Library')")
             conn.execute("INSERT OR IGNORE INTO media_folders (name) VALUES ('System')")
             conn.commit()
+        self._invalidate_clips_cache()
 
     async def sync_with_disk(self) -> None:
         pending_paths = await asyncio.to_thread(self._sync_with_disk_sync)
@@ -194,6 +214,7 @@ class ClipStore:
                         Path(row['thumbnail_path']).unlink(missing_ok=True)
                     conn.execute('DELETE FROM clips WHERE filename = ?', (row['filename'],))
             conn.commit()
+        self._invalidate_clips_cache()
         return pending_paths
 
     async def ensure_builtin_clips(self) -> None:
@@ -258,6 +279,7 @@ class ClipStore:
                     ),
                 )
             conn.commit()
+        self._invalidate_clips_cache()
 
     def _probe_clip(self, file_path: Path) -> dict:
         media_kind = self._media_kind_for_path(file_path)
@@ -333,34 +355,40 @@ class ClipStore:
             or row['duration_timecode'] == '00:00:00:00'
             or row['codec'] == 'unknown'
             or not row['framerate']
+            or (expected_kind == 'video' and row['audio_levels'] is None)
         )
 
     def _generate_thumbnail(self, file_path: Path) -> str | None:
-        if self._media_kind_for_path(file_path) == 'image':
-            return None
         if not shutil.which(self.config.ffmpeg_binary):
             return None
         output = self._thumbnail_output_path(file_path)
-        cmd = [
-            self.config.ffmpeg_binary,
-            '-y',
-            '-hide_banner',
-            '-loglevel',
-            'error',
+        is_video = self._media_kind_for_path(file_path) == 'video'
+        # Seek-before-input decodes a single GOP instead of the ~100 frames the
+        # `thumbnail` filter walks through — an order of magnitude faster on a Pi.
+        self._run_thumbnail_command(file_path, output, seek_seconds=1.0 if is_video else None)
+        if not output.exists() and is_video:
+            # Clips shorter than the seek point: grab the first frame instead.
+            self._run_thumbnail_command(file_path, output, seek_seconds=None)
+        return str(output) if output.exists() else None
+
+    def _run_thumbnail_command(self, file_path: Path, output: Path, seek_seconds: float | None) -> None:
+        cmd = [self.config.ffmpeg_binary, '-y', '-hide_banner', '-loglevel', 'error']
+        if seek_seconds is not None:
+            cmd.extend(['-ss', str(seek_seconds)])
+        cmd.extend([
             '-i',
             str(file_path),
-            '-vf',
-            'thumbnail,scale=256:-2:flags=lanczos',
             '-frames:v',
             '1',
+            '-vf',
+            'scale=256:-2:flags=lanczos',
             '-q:v',
             '6',
             '-map_metadata',
             '-1',
             str(output),
-        ]
-        subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return str(output) if output.exists() else None
+        ])
+        subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
 
     def _thumbnail_output_path(self, file_path: Path) -> Path:
         stats = file_path.stat()
@@ -370,8 +398,6 @@ class ClipStore:
         return self.thumbnails_dir / f'{file_path.stem}-{fingerprint}.jpg'
 
     def _thumbnail_needs_refresh(self, file_path: Path, thumbnail_path: str | None) -> bool:
-        if self._media_kind_for_path(file_path) == 'image':
-            return False
         if not thumbnail_path:
             return True
         output = Path(thumbnail_path)
@@ -433,15 +459,22 @@ class ClipStore:
         meta = self._probe_clip(file_path)
         media_kind = meta.get('media_kind', self._media_kind_for_path(file_path))
         thumb = self._generate_thumbnail(file_path)
+        audio_levels = self._compute_audio_levels(file_path) if media_kind == 'video' else []
         with self._connect() as conn:
             row = conn.execute('SELECT * FROM clips WHERE filename = ?', (file_path.name,)).fetchone()
             if not row:
                 return False
             old_thumb = row['thumbnail_path']
+            duration_seconds = meta['duration_seconds']
+            duration_timecode = meta['duration_timecode']
+            if media_kind == 'image' and float(row['duration_seconds'] or 0.0) > 0:
+                # Stills keep their operator-set duration across re-enrichment.
+                duration_seconds = float(row['duration_seconds'])
+                duration_timecode = seconds_to_timecode(duration_seconds, meta['framerate'])
             conn.execute(
                 '''
                 UPDATE clips
-                SET width = ?, height = ?, media_kind = ?, is_vertical = ?, codec = ?, framerate = ?, duration_seconds = ?, duration_timecode = ?, thumbnail_path = ?, processing_state = ?
+                SET width = ?, height = ?, media_kind = ?, is_vertical = ?, codec = ?, framerate = ?, duration_seconds = ?, duration_timecode = ?, thumbnail_path = ?, audio_levels = ?, processing_state = ?
                 WHERE filename = ?
                 ''',
                 (
@@ -451,22 +484,52 @@ class ClipStore:
                     1 if meta['is_vertical'] else 0,
                     meta['codec'],
                     meta['framerate'],
-                    meta['duration_seconds'],
-                    meta['duration_timecode'],
+                    duration_seconds,
+                    duration_timecode,
                     thumb,
+                    json.dumps(audio_levels),
                     'ready',
                     file_path.name,
                 ),
             )
             conn.commit()
+        self._invalidate_clips_cache()
         if old_thumb and old_thumb != thumb:
             Path(old_thumb).unlink(missing_ok=True)
         return True
+
+    def _compute_audio_levels(self, file_path: Path) -> list[float]:
+        """Per-second RMS envelope (dBFS, clamped to [-60, 0]) precomputed once at
+        import time so the UI VU meter costs nothing during playback."""
+        if not shutil.which(self.config.ffmpeg_binary):
+            return []
+        cmd = [
+            self.config.ffmpeg_binary,
+            '-hide_banner',
+            '-nostats',
+            '-v',
+            'error',
+            '-i',
+            str(file_path),
+            '-vn',
+            '-af',
+            'aresample=8000,asetnsamples=n=8000,astats=metadata=1:reset=1,'
+            'ametadata=mode=print:key=lavfi.astats.Overall.RMS_level:file=-',
+            '-f',
+            'null',
+            '-',
+        ]
+        try:
+            result = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=600)
+        except subprocess.TimeoutExpired:
+            return []
+        return parse_rms_levels(result.stdout)
 
     def _set_processing_state_sync(self, filename: str, state: str) -> None:
         with self._connect() as conn:
             conn.execute('UPDATE clips SET processing_state = ? WHERE filename = ?', (state, filename))
             conn.commit()
+        self._invalidate_clips_cache()
 
     def _record_batch_enqueue(self, count: int) -> None:
         with self._processing_metrics_lock:
@@ -488,7 +551,14 @@ class ClipStore:
                 self._processing_batch_total = self._processing_batch_completed
 
     async def processing_status(self) -> dict[str, int]:
-        return await asyncio.to_thread(self._processing_status_sync)
+        # Derived from the in-memory clip cache: called every health tick, so it
+        # must not touch SQLite.
+        clips = await self.list_clips()
+        counts: dict[str, int] = {}
+        for clip in clips:
+            state = clip.processing_state or 'ready'
+            counts[state] = counts.get(state, 0) + 1
+        return self._processing_status_from_counts(counts)
 
     def _processing_status_sync(self) -> dict[str, int | float | None]:
         with self._connect() as conn:
@@ -500,6 +570,9 @@ class ClipStore:
                 '''
             ).fetchall()
         counts = {row['processing_state']: row['count'] for row in rows}
+        return self._processing_status_from_counts(counts)
+
+    def _processing_status_from_counts(self, counts: dict[str, int]) -> dict[str, int | float | None]:
         pending = int(counts.get('pending', 0))
         processing = int(counts.get('processing', 0))
         error = int(counts.get('error', 0))
@@ -546,11 +619,30 @@ class ClipStore:
             destination.write_bytes(content)
 
     async def list_clips(self) -> List[ClipRecord]:
-        return await asyncio.to_thread(self._list_clips_sync)
+        cached = self._clips_cache
+        if cached is not None:
+            return cached
+        generation = self._clips_cache_generation
+        clips = await asyncio.to_thread(self._list_clips_sync)
+        # Only cache if no write landed while the read was in flight.
+        if generation == self._clips_cache_generation:
+            self._clips_index = {clip.deck_id: clip for clip in clips}
+            self._clips_cache = clips
+        return clips
 
     def _list_clips_sync(self) -> List[ClipRecord]:
         with self._connect() as conn:
-            rows = conn.execute('SELECT * FROM clips ORDER BY sort_order ASC, id ASC').fetchall()
+            # audio_levels can be tens of KB per clip; only its presence is listed.
+            rows = conn.execute(
+                '''
+                SELECT id, sort_order, name, folder, filename, filepath, duration_seconds,
+                       duration_timecode, framerate, codec, width, height, media_kind,
+                       is_vertical, thumbnail_path, processing_state, loop_enabled, is_builtin,
+                       mark_in_seconds, mark_out_seconds, tags,
+                       (CASE WHEN audio_levels IS NOT NULL AND LENGTH(audio_levels) > 2 THEN 1 ELSE 0 END) AS has_audio_levels
+                FROM clips ORDER BY sort_order ASC, id ASC
+                '''
+            ).fetchall()
         clips: list[ClipRecord] = []
         for index, row in enumerate(rows, start=1):
             clips.append(
@@ -574,12 +666,16 @@ class ClipStore:
                     is_builtin=bool(row['is_builtin']),
                     mark_in_seconds=float(row['mark_in_seconds'] or 0.0),
                     mark_out_seconds=float(row['mark_out_seconds'] or 0.0),
+                    tags=row['tags'] or '',
+                    has_audio_levels=bool(row['has_audio_levels']),
                 )
             )
         return clips
 
     async def get_clip(self, deck_id: int) -> ClipRecord | None:
         clips = await self.list_clips()
+        if self._clips_cache is clips:
+            return self._clips_index.get(deck_id)
         return next((clip for clip in clips if clip.deck_id == deck_id), None)
 
     async def rename_clip(self, deck_id: int, name: str) -> ClipRecord | None:
@@ -594,6 +690,7 @@ class ClipStore:
             row_id = rows[deck_id - 1]['id']
             conn.execute('UPDATE clips SET name = ? WHERE id = ?', (name, row_id))
             conn.commit()
+        self._invalidate_clips_cache()
 
     async def list_folders(self) -> list[str]:
         return await asyncio.to_thread(self._list_folders_sync)
@@ -621,6 +718,7 @@ class ClipStore:
         with self._connect() as conn:
             conn.execute('INSERT OR IGNORE INTO media_folders (name) VALUES (?)', (folder,))
             conn.commit()
+        self._invalidate_clips_cache()
         return folder
 
     async def set_folder(self, deck_id: int, folder: str) -> ClipRecord | None:
@@ -637,6 +735,7 @@ class ClipStore:
             row_id = rows[deck_id - 1]['id']
             conn.execute('UPDATE clips SET folder = ? WHERE id = ?', (folder, row_id))
             conn.commit()
+        self._invalidate_clips_cache()
 
     async def set_loop(self, deck_id: int, enabled: bool) -> ClipRecord | None:
         await asyncio.to_thread(self._set_loop_sync, deck_id, enabled)
@@ -650,6 +749,7 @@ class ClipStore:
             row_id = rows[deck_id - 1]['id']
             conn.execute('UPDATE clips SET loop_enabled = ? WHERE id = ?', (1 if enabled else 0, row_id))
             conn.commit()
+        self._invalidate_clips_cache()
 
     async def set_marks(
         self,
@@ -684,6 +784,107 @@ class ClipStore:
             params.append(row_id)
             conn.execute(f'UPDATE clips SET {", ".join(assignments)} WHERE id = ?', params)
             conn.commit()
+        self._invalidate_clips_cache()
+
+    async def set_tags(self, deck_id: int, tags: str) -> ClipRecord | None:
+        await asyncio.to_thread(self._set_tags_sync, deck_id, normalize_tags(tags))
+        return await self.get_clip(deck_id)
+
+    def _set_tags_sync(self, deck_id: int, tags: str) -> None:
+        with self._connect() as conn:
+            rows = conn.execute('SELECT id FROM clips ORDER BY sort_order ASC, id ASC').fetchall()
+            if deck_id < 1 or deck_id > len(rows):
+                return
+            conn.execute('UPDATE clips SET tags = ? WHERE id = ?', (tags, rows[deck_id - 1]['id']))
+            conn.commit()
+        self._invalidate_clips_cache()
+
+    async def set_duration(self, deck_id: int, seconds: float) -> ClipRecord | None:
+        await asyncio.to_thread(self._set_duration_sync, deck_id, seconds)
+        return await self.get_clip(deck_id)
+
+    def _set_duration_sync(self, deck_id: int, seconds: float) -> None:
+        with self._connect() as conn:
+            rows = conn.execute('SELECT id, framerate FROM clips ORDER BY sort_order ASC, id ASC').fetchall()
+            if deck_id < 1 or deck_id > len(rows):
+                return
+            row = rows[deck_id - 1]
+            duration = max(0.5, min(float(seconds), 86400.0))
+            conn.execute(
+                'UPDATE clips SET duration_seconds = ?, duration_timecode = ? WHERE id = ?',
+                (duration, seconds_to_timecode(duration, row['framerate'] or 25.0), row['id']),
+            )
+            conn.commit()
+        self._invalidate_clips_cache()
+
+    async def get_audio_levels(self, deck_id: int) -> list[float]:
+        return await asyncio.to_thread(self._get_audio_levels_sync, deck_id)
+
+    def _get_audio_levels_sync(self, deck_id: int) -> list[float]:
+        with self._connect() as conn:
+            rows = conn.execute('SELECT id FROM clips ORDER BY sort_order ASC, id ASC').fetchall()
+            if deck_id < 1 or deck_id > len(rows):
+                return []
+            row = conn.execute('SELECT audio_levels FROM clips WHERE id = ?', (rows[deck_id - 1]['id'],)).fetchone()
+        if not row or not row['audio_levels']:
+            return []
+        try:
+            levels = json.loads(row['audio_levels'])
+        except (TypeError, ValueError):
+            return []
+        return levels if isinstance(levels, list) else []
+
+    async def export_entries(self) -> list[dict[str, Any]]:
+        clips = await self.list_clips()
+        return [
+            {
+                'filename': clip.filename,
+                'name': clip.name,
+                'folder': clip.folder,
+                'loop_enabled': clip.loop_enabled,
+                'mark_in_seconds': clip.mark_in_seconds,
+                'mark_out_seconds': clip.mark_out_seconds,
+                'tags': clip.tags,
+                'media_kind': clip.media_kind,
+                'duration_seconds': clip.duration_seconds if clip.media_kind == 'image' else None,
+            }
+            for clip in clips
+        ]
+
+    async def apply_import_entries(self, entries: list[dict[str, Any]]) -> int:
+        return await asyncio.to_thread(self._apply_import_entries_sync, entries or [])
+
+    def _apply_import_entries_sync(self, entries: list[dict[str, Any]]) -> int:
+        applied = 0
+        with self._connect() as conn:
+            for entry in entries:
+                filename = str(entry.get('filename') or '').strip()
+                if not filename:
+                    continue
+                row = conn.execute('SELECT id, framerate, media_kind FROM clips WHERE filename = ?', (filename,)).fetchone()
+                if not row:
+                    continue
+                folder = (str(entry.get('folder') or '') or 'Library').strip() or 'Library'
+                conn.execute('INSERT OR IGNORE INTO media_folders (name) VALUES (?)', (folder,))
+                assignments = {
+                    'name': str(entry.get('name') or filename),
+                    'folder': folder,
+                    'loop_enabled': 1 if entry.get('loop_enabled') else 0,
+                    'mark_in_seconds': max(0.0, float(entry.get('mark_in_seconds') or 0.0)),
+                    'mark_out_seconds': max(0.0, float(entry.get('mark_out_seconds') or 0.0)),
+                    'tags': normalize_tags(str(entry.get('tags') or '')),
+                }
+                duration = entry.get('duration_seconds')
+                if duration and row['media_kind'] == 'image':
+                    clamped = max(0.5, min(float(duration), 86400.0))
+                    assignments['duration_seconds'] = clamped
+                    assignments['duration_timecode'] = seconds_to_timecode(clamped, row['framerate'] or 25.0)
+                keys = ', '.join(f'{key} = ?' for key in assignments)
+                conn.execute(f'UPDATE clips SET {keys} WHERE id = ?', (*assignments.values(), row['id']))
+                applied += 1
+            conn.commit()
+        self._invalidate_clips_cache()
+        return applied
 
     async def delete_clip(self, deck_id: int) -> None:
         await asyncio.to_thread(self._delete_clip_sync, deck_id)
@@ -699,6 +900,7 @@ class ClipStore:
                 Path(row['thumbnail_path']).unlink(missing_ok=True)
             conn.execute('DELETE FROM clips WHERE id = ?', (row['id'],))
             conn.commit()
+        self._invalidate_clips_cache()
 
     async def reorder(self, deck_ids: list[int]) -> None:
         await asyncio.to_thread(self._reorder_sync, deck_ids)
@@ -712,6 +914,7 @@ class ClipStore:
             for sort_order, row_id in enumerate(ordered_row_ids, start=1):
                 conn.execute('UPDATE clips SET sort_order = ? WHERE id = ?', (sort_order, row_id))
             conn.commit()
+        self._invalidate_clips_cache()
 
     def _media_kind_for_path(self, file_path: Path) -> str:
         return 'image' if file_path.suffix.lower() in IMAGE_EXTENSIONS else 'video'
@@ -720,6 +923,34 @@ class ClipStore:
         if media_kind == 'image':
             return float(self.config.default_image_duration_seconds)
         return 0.0
+
+
+def normalize_tags(raw: str) -> str:
+    parts = [part.strip().lower() for part in (raw or '').replace(';', ',').split(',')]
+    seen: list[str] = []
+    for part in parts:
+        if part and part not in seen:
+            seen.append(part)
+    return ', '.join(seen)
+
+
+def parse_rms_levels(stdout: str, max_entries: int = 14400) -> list[float]:
+    """Parse ffmpeg ametadata output into one clamped dBFS value per second."""
+    levels: list[float] = []
+    for line in stdout.splitlines():
+        if 'lavfi.astats.Overall.RMS_level=' not in line:
+            continue
+        raw = line.rsplit('=', 1)[1].strip()
+        try:
+            value = float(raw)
+        except ValueError:
+            value = -60.0
+        if value != value or value == float('-inf'):  # NaN or silence
+            value = -60.0
+        levels.append(round(max(-60.0, min(value, 0.0)), 1))
+        if len(levels) >= max_entries:
+            break
+    return levels
 
 
 def seconds_to_timecode(seconds: float, framerate: float) -> str:

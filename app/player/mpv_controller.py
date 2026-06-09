@@ -25,10 +25,32 @@ class MPVController:
         self._output_height: int | None = None
         self.last_error: str | None = None
 
+    def _ipc_path(self) -> str:
+        configured = self.config.mpv_socket_path
+        if platform.system() == 'Windows' and not configured.startswith('\\\\.\\pipe\\'):
+            return r'\\.\pipe\deckpilot-mpv'
+        return configured
+
+    def _ipc_is_pipe(self) -> bool:
+        return self._ipc_path().startswith('\\\\.\\pipe\\')
+
+    async def _open_ipc(self) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        ipc_path = self._ipc_path()
+        if self._ipc_is_pipe():
+            # Windows named pipe via the proactor event loop.
+            loop = asyncio.get_running_loop()
+            reader = asyncio.StreamReader()
+            protocol = asyncio.StreamReaderProtocol(reader)
+            transport, _ = await loop.create_pipe_connection(lambda: protocol, ipc_path)  # type: ignore[attr-defined]
+            writer = asyncio.StreamWriter(transport, protocol, reader, loop)
+            return reader, writer
+        return await asyncio.open_unix_connection(ipc_path)
+
     async def start(self) -> None:
-        socket_path = Path(self.config.mpv_socket_path)
-        if socket_path.exists():
-            socket_path.unlink()
+        if not self._ipc_is_pipe():
+            socket_path = Path(self._ipc_path())
+            if socket_path.exists():
+                socket_path.unlink()
         log_path = Path(self.config.mpv_log_path)
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.write_text('', encoding='utf-8')
@@ -41,14 +63,12 @@ class MPVController:
             )
             self.process = process
             for _ in range(48):
-                if socket_path.exists():
-                    try:
-                        self._reader, self._writer = await asyncio.open_unix_connection(self.config.mpv_socket_path)
-                        self.last_error = None
-                        return
-                    except (ConnectionError, FileNotFoundError, OSError):
-                        await asyncio.sleep(0.25)
-                        continue
+                try:
+                    self._reader, self._writer = await self._open_ipc()
+                    self.last_error = None
+                    return
+                except (ConnectionError, FileNotFoundError, OSError):
+                    pass
                 if process.returncode is not None:
                     break
                 await asyncio.sleep(0.25)
@@ -56,7 +76,7 @@ class MPVController:
             self.last_error = self._build_start_error(profile_name, log_path)
 
         if not self.last_error:
-            self.last_error = f'mpv IPC socket was not created at {self.config.mpv_socket_path}'
+            self.last_error = f'mpv IPC endpoint was not created at {self._ipc_path()}'
 
     async def stop_process(self) -> None:
         if self._writer:
@@ -107,6 +127,11 @@ class MPVController:
     async def play_file(self, path: str, loop: bool = False, is_vertical: bool = False, start: float = 0.0) -> bool:
         if not await self._command_ok(['set_property', 'vf', '']):
             return False
+        # mpv keeps the speed property across loadfile, so every fresh start resets to 1x.
+        if not await self._command_ok(['set_property', 'speed', 1.0]):
+            return False
+        # Stills are held until the deck controller decides to stop or advance.
+        await self._command_ok(['set_property', 'image-display-duration', 'inf'])
         # Load paused so we can seek to the in-mark before the first frame is shown.
         if not await self._command_ok(['set_property', 'pause', True]):
             return False
@@ -121,6 +146,9 @@ class MPVController:
     async def cue_file(self, path: str, loop: bool = False, is_vertical: bool = False, start: float = 0.0) -> bool:
         if not await self._command_ok(['set_property', 'vf', '']):
             return False
+        if not await self._command_ok(['set_property', 'speed', 1.0]):
+            return False
+        await self._command_ok(['set_property', 'image-display-duration', 'inf'])
         if not await self._command_ok(['set_property', 'pause', True]):
             return False
         if not await self._command_ok(['loadfile', path, 'replace']):
@@ -153,6 +181,9 @@ class MPVController:
 
     async def set_loop(self, enabled: bool) -> bool:
         return await self._command_ok(['set_property', 'loop-file', 'inf' if enabled else 'no'])
+
+    async def set_speed(self, factor: float) -> bool:
+        return await self._command_ok(['set_property', 'speed', float(factor)])
 
     async def set_volume(self, value: int) -> bool:
         return await self._command_ok(['set_property', 'volume', value])
@@ -204,7 +235,9 @@ class MPVController:
             '--idle=yes',
             '--fullscreen=yes',
             '--force-window=no',
-            '--keep-open=no',
+            # Hold the last frame at EOF instead of flashing the idle screen; the
+            # deck controller decides what happens next (stop / advance / hold).
+            '--keep-open=always',
             '--audio-display=no',
             '--terminal=no',
             '--no-config',
@@ -212,8 +245,15 @@ class MPVController:
             '--load-scripts=no',
             '--osd-level=0',
             '--hwdec=auto-safe',
+            # Bound the demuxer cache: mpv defaults to ~150 MiB forward cache,
+            # which starves a 1 GB Pi. Local SD/USB reads do not need it.
+            '--demuxer-max-bytes=48MiB',
+            '--demuxer-max-back-bytes=16MiB',
+            # Plain resampling at off-speeds instead of scaletempo: cheaper on
+            # Pi-class CPUs and the natural pitch shift suits replay workflows.
+            '--audio-pitch-correction=no',
             f'--log-file={log_path}',
-            f'--input-ipc-server={self.config.mpv_socket_path}',
+            f'--input-ipc-server={self._ipc_path()}',
         ]
         if self._selected_output_id and self._selected_output_id.isdigit():
             base_args.append(f'--fs-screen={self._selected_output_id}')
@@ -238,7 +278,7 @@ class MPVController:
         tail = self._tail_file(log_path, line_count=20)
         if tail:
             return f'mpv startup failed ({profile_name}): {tail}'
-        return f'mpv IPC socket was not created at {self.config.mpv_socket_path} ({profile_name})'
+        return f'mpv IPC endpoint was not created at {self._ipc_path()} ({profile_name})'
 
     def _tail_file(self, path: Path, line_count: int = 8) -> str:
         try:

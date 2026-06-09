@@ -21,6 +21,10 @@ class FakeClip:
     mark_in_seconds: float = 0.0
     mark_out_seconds: float = 0.0
 
+    @property
+    def filename(self) -> str:
+        return self.filepath.split('/')[-1]
+
     def trim_bounds(self) -> tuple[float, float]:
         duration = max(0.0, float(self.duration_seconds or 0.0))
         start = max(0.0, min(float(self.mark_in_seconds or 0.0), duration))
@@ -93,14 +97,38 @@ class FakeClipStore:
 
 
 class FakePlaylistStore:
+    def __init__(self) -> None:
+        self.items: list[dict] = []
+        self.added: list[int] = []
+        self.cleared = 0
+
     async def sync_active_playlist_from_clips(self) -> None:
         return None
 
     async def list_playlists(self) -> list[dict]:
-        return []
+        return [{'id': 1, 'name': 'Main Playlist', 'is_active': True, 'item_count': len(self.items)}]
 
     async def get_active_playlist(self) -> dict:
-        return {'playlist': None, 'items': []}
+        return {
+            'playlist': {'id': 1, 'name': 'Main Playlist', 'is_active': True, 'item_count': len(self.items)},
+            'items': list(self.items),
+        }
+
+    async def add_clip_to_playlist(self, playlist_id: int, clip_id: int) -> None:
+        self.added.append(clip_id)
+        self.items.append({
+            'position': len(self.items) + 1,
+            'clip_id': clip_id,
+            'clip_name': f'Clip {clip_id}',
+            'duration_timecode': '00:00:12:00',
+            'loop_enabled': False,
+            'auto_advance': False,
+            'end_behavior': 'next',
+        })
+
+    async def clear_playlist(self, playlist_id: int) -> None:
+        self.cleared += 1
+        self.items = []
 
     async def reorder_active_playlist(self, deck_ids: list[int]) -> None:
         return None
@@ -155,6 +183,7 @@ class FakePlayer:
         self.play_starts: list[float] = []
         self.pause_calls: list[bool] = []
         self.loop_calls: list[bool] = []
+        self.speed_calls: list[float] = []
         self.seek_calls: list[float] = []
         self.standby_calls: list[str] = []
         self.stop_calls = 0
@@ -183,6 +212,10 @@ class FakePlayer:
 
     async def set_loop(self, enabled: bool) -> bool:
         self.loop_calls.append(enabled)
+        return True
+
+    async def set_speed(self, factor: float) -> bool:
+        self.speed_calls.append(factor)
         return True
 
     async def seek_absolute(self, seconds: float) -> bool:
@@ -348,6 +381,198 @@ class DeckControllerCueLoopTests(unittest.IsolatedAsyncioTestCase):
         await self.controller.stop_playback()
 
         self.assertEqual(self.player.standby_calls, [])
+
+
+class DeckControllerProtocolTimelineTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        clips = [
+            FakeClip(deck_id=1, name='Intro', filepath='/tmp/intro.mp4'),
+            FakeClip(deck_id=2, name='Main', filepath='/tmp/main.mp4'),
+        ]
+        self.state = AppState(AppConfig())
+        self.player = FakePlayer()
+        self.playlist_store = FakePlaylistStore()
+        self.controller = DeckController(
+            config=AppConfig(),
+            state=self.state,
+            clip_store=FakeClipStore(clips),
+            playlist_store=self.playlist_store,
+            output_manager=FakeOutputManager(),
+            network_info=FakeNetworkInfo(),
+            player=self.player,
+        )
+
+    async def test_protocol_clips_add_by_id(self) -> None:
+        ok = await self.controller.protocol_clips_add(clip_id=2)
+
+        self.assertTrue(ok)
+        self.assertEqual(self.playlist_store.added, [2])
+
+    async def test_protocol_clips_add_by_name_is_case_insensitive(self) -> None:
+        ok = await self.controller.protocol_clips_add(name='intro')
+
+        self.assertTrue(ok)
+        self.assertEqual(self.playlist_store.added, [1])
+
+    async def test_protocol_clips_add_unknown_clip_fails(self) -> None:
+        ok = await self.controller.protocol_clips_add(name='ghost')
+
+        self.assertFalse(ok)
+        self.assertEqual(self.playlist_store.added, [])
+
+    async def test_protocol_clips_clear_empties_timeline(self) -> None:
+        await self.controller.protocol_clips_add(clip_id=1)
+
+        ok = await self.controller.protocol_clips_clear()
+
+        self.assertTrue(ok)
+        self.assertEqual(self.playlist_store.cleared, 1)
+        self.assertEqual(self.playlist_store.items, [])
+
+
+class DeckControllerRundownTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        clips = [
+            FakeClip(deck_id=1, name='Intro', filepath='/tmp/intro.mp4'),
+            FakeClip(deck_id=2, name='Loop BG', filepath='/tmp/bg.mp4'),
+        ]
+        self.state = AppState(AppConfig())
+        self.player = FakePlayer()
+        self.playlist_store = FakePlaylistStore()
+        self.clip_store = FakeClipStore(clips)
+        self.controller = DeckController(
+            config=AppConfig(),
+            state=self.state,
+            clip_store=self.clip_store,
+            playlist_store=self.playlist_store,
+            output_manager=FakeOutputManager(),
+            network_info=FakeNetworkInfo(),
+            player=self.player,
+        )
+        await self.playlist_store.add_clip_to_playlist(1, 1)
+        await self.playlist_store.add_clip_to_playlist(1, 2)
+
+    async def test_play_from_position_honors_loop_end_behavior(self) -> None:
+        self.playlist_store.items[1]['end_behavior'] = 'loop'
+
+        ok = await self.controller.play_playlist_from_position(2)
+
+        self.assertTrue(ok)
+        self.assertTrue(self.state.transport.loop)
+
+    async def test_current_playlist_end_behavior_reads_active_item(self) -> None:
+        self.playlist_store.items[0]['end_behavior'] = 'hold'
+        await self.controller.play_playlist_from_position(1)
+
+        behavior = await self.controller._current_playlist_end_behavior()
+
+        self.assertEqual(behavior, 'hold')
+
+    async def test_hold_at_position_freezes_on_out_frame(self) -> None:
+        await self.controller.play_playlist_from_position(1)
+        clip = await self.clip_store.get_clip(1)
+
+        await self.controller._hold_at_position(clip, 12.0)
+
+        self.assertIn(True, self.player.pause_calls)
+        self.assertEqual(self.state.transport.status, 'stopped')
+        self.assertTrue(self.state.transport.paused)
+        self.assertAlmostEqual(self.state.transport.elapsed_seconds, 12.0, places=2)
+        self.assertTrue(self.state.transport.playlist_mode)
+        self.assertAlmostEqual(self.controller._clock_elapsed(), 12.0, places=2)
+
+
+class DeckControllerSpeedTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        clip = FakeClip(deck_id=7, name='Demo', filepath='/tmp/demo.mp4', loop_enabled=False)
+        self.state = AppState(AppConfig())
+        self.player = FakePlayer()
+        self.clip_store = FakeClipStore([clip])
+        self.controller = DeckController(
+            config=AppConfig(),
+            state=self.state,
+            clip_store=self.clip_store,
+            playlist_store=FakePlaylistStore(),
+            output_manager=FakeOutputManager(),
+            network_info=FakeNetworkInfo(),
+            player=self.player,
+        )
+
+    async def test_play_with_speed_applies_player_speed_and_transport(self) -> None:
+        ok = await self.controller.play(clip_id=7, single_clip=True, speed=50)
+
+        self.assertTrue(ok)
+        self.assertEqual(self.player.speed_calls, [0.5])
+        self.assertEqual(self.state.transport.speed, 50)
+        self.assertEqual(self.state.transport.playback_speed_percent, 50)
+
+    async def test_play_rejects_reverse_speed(self) -> None:
+        ok = await self.controller.play(clip_id=7, single_clip=True, speed=-100)
+
+        self.assertFalse(ok)
+        self.assertEqual(self.player.play_calls, [])
+
+    async def test_set_playback_speed_clamps_into_supported_window(self) -> None:
+        await self.controller.play(clip_id=7, single_clip=True)
+
+        ok = await self.controller.set_playback_speed(1600)
+
+        self.assertTrue(ok)
+        self.assertEqual(self.player.speed_calls[-1], 2.0)
+        self.assertEqual(self.state.transport.speed, 200)
+        self.assertEqual(self.state.transport.playback_speed_percent, 200)
+
+    async def test_set_playback_speed_preserves_elapsed_position(self) -> None:
+        await self.controller.play(clip_id=7, single_clip=True)
+        # Pretend playback has been running for 4 seconds.
+        self.controller._play_started_at -= 4.0
+        before = self.controller._clock_elapsed()
+
+        ok = await self.controller.set_playback_speed(50)
+
+        self.assertTrue(ok)
+        # The clock keeps running between the two reads; only continuity matters.
+        self.assertAlmostEqual(self.controller._clock_elapsed(), before, delta=0.1)
+
+    async def test_set_playback_speed_requires_loaded_clip(self) -> None:
+        ok = await self.controller.set_playback_speed(50)
+
+        self.assertFalse(ok)
+        self.assertEqual(self.player.speed_calls, [])
+
+    async def test_cue_resets_speed_and_play_defaults_to_full_speed(self) -> None:
+        await self.controller.play(clip_id=7, single_clip=True, speed=50)
+        await self.controller.goto_clip(7)
+
+        self.assertEqual(self.state.transport.playback_speed_percent, 100)
+
+        await self.controller.play(clip_id=7, single_clip=True)
+
+        self.assertEqual(self.state.transport.speed, 100)
+        self.assertEqual(self.state.transport.playback_speed_percent, 100)
+
+    async def test_stop_resets_speed(self) -> None:
+        await self.controller.play(clip_id=7, single_clip=True, speed=150)
+
+        await self.controller.stop_playback()
+
+        self.assertEqual(self.state.transport.playback_speed_percent, 100)
+        self.assertEqual(self.state.transport.speed, 0)
+
+    async def test_cued_hold_then_play_starts_clock_at_in_point(self) -> None:
+        # Regression: holding a cue before play used to double-count the hold
+        # time and freeze the displayed timecode at the start of playback.
+        self.clip_store.clips[7].mark_in_seconds = 2.0
+        await self.controller.goto_clip(7)
+        # Pretend the cue has been held for 30 seconds.
+        self.controller._play_started_at -= 30.0
+        self.controller._pause_started_at -= 30.0
+
+        ok = await self.controller.play(clip_id=7, single_clip=True)
+
+        self.assertTrue(ok)
+        # The clock keeps running after play; the buggy behavior reported ~0.0 here.
+        self.assertAlmostEqual(self.controller._clock_elapsed(), 2.0, delta=0.2)
 
 
 if __name__ == '__main__':

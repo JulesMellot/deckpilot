@@ -26,6 +26,8 @@ class ClipRecord:
     is_builtin: bool = False
     mark_in_seconds: float = 0.0
     mark_out_seconds: float = 0.0
+    tags: str = ""
+    has_audio_levels: bool = False
 
     def trim_bounds(self) -> tuple[float, float]:
         """Return the effective (in, out) playback window in absolute seconds.
@@ -54,6 +56,7 @@ class ClipRecord:
 class TransportState:
     status: str = "stopped"
     speed: int = 0
+    playback_speed_percent: int = 100
     slot_id: int = 1
     clip_id: int = 0
     display_timecode: str = "00:00:00:00"
@@ -130,6 +133,7 @@ class PlaylistItem:
     duration_timecode: str
     loop_enabled: bool = False
     auto_advance: bool = False
+    end_behavior: str = "next"
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

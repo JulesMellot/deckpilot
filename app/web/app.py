@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+import json
+import sqlite3
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -42,6 +45,26 @@ class MuteRequest(BaseModel):
 
 class SeekRequest(BaseModel):
     seconds: float
+
+
+class SpeedRequest(BaseModel):
+    percent: float
+
+
+class TagsRequest(BaseModel):
+    tags: str
+
+
+class DurationRequest(BaseModel):
+    seconds: float
+
+
+class EndBehaviorRequest(BaseModel):
+    end_behavior: str
+
+
+class PlaylistReorderRequest(BaseModel):
+    positions: list[int]
 
 
 class MarksRequest(BaseModel):
@@ -115,6 +138,16 @@ def build_app(
     static_dir = Path(__file__).resolve().parent.parent / 'static'
     app.mount('/static', StaticFiles(directory=static_dir), name='static')
     app.mount('/media', StaticFiles(directory=controller.config.clips_dir), name='media')
+
+    @app.middleware('http')
+    async def immutable_asset_cache(request, call_next):
+        response = await call_next(request)
+        path = request.url.path
+        # Static assets are mtime-versioned and thumbnails are content-
+        # fingerprinted, so browsers can cache them forever.
+        if path.startswith('/thumbs/') or (path.startswith('/static/') and 'v' in request.query_params):
+            response.headers['Cache-Control'] = 'public, max-age=31536000, immutable'
+        return response
 
     def _asset_version(name: str) -> int:
         try:
@@ -215,6 +248,22 @@ def build_app(
         await playlist_store.clear_playlist(playlist_id)
         return {'ok': True, 'active': await playlist_store.get_active_playlist()}
 
+    @app.patch('/api/playlists/{playlist_id}/items/{position}')
+    async def set_playlist_item_behavior(playlist_id: int, position: int, payload: EndBehaviorRequest) -> dict[str, Any]:
+        ok_flag = await playlist_store.set_item_end_behavior(playlist_id, position, payload.end_behavior)
+        if not ok_flag:
+            raise HTTPException(status_code=400, detail='Invalid item or end behavior')
+        await controller.refresh_clips()
+        return {'ok': True}
+
+    @app.post('/api/playlists/{playlist_id}/items/reorder')
+    async def reorder_playlist_items(playlist_id: int, payload: PlaylistReorderRequest) -> dict[str, Any]:
+        ok_flag = await playlist_store.reorder_items(playlist_id, payload.positions)
+        if not ok_flag:
+            raise HTTPException(status_code=400, detail='Invalid position list')
+        await controller.refresh_clips()
+        return {'ok': True}
+
     @app.post('/api/playlists/loop')
     async def set_playlist_loop(payload: LoopRequest) -> dict[str, Any]:
         await controller.set_playlist_loop(payload.enabled)
@@ -236,6 +285,40 @@ def build_app(
             return await update_manager.trigger_update()
         except RuntimeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get('/api/system/export')
+    async def export_library() -> JSONResponse:
+        payload = await controller.export_snapshot()
+        return JSONResponse(
+            payload,
+            headers={'Content-Disposition': 'attachment; filename="deckpilot-export.json"'},
+        )
+
+    @app.post('/api/system/import')
+    async def import_library(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            applied = await controller.import_snapshot(payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return {'ok': True, **applied}
+
+    @app.get('/api/system/backup')
+    async def backup_database() -> FileResponse:
+        backup_path = Path(controller.config.data_dir) / 'deckpilot-backup.db'
+
+        def make_backup() -> None:
+            source = sqlite3.connect(controller.config.db_path)
+            try:
+                target = sqlite3.connect(backup_path)
+                try:
+                    source.backup(target)
+                finally:
+                    target.close()
+            finally:
+                source.close()
+
+        await asyncio.to_thread(make_backup)
+        return FileResponse(backup_path, filename='deckpilot-backup.db', media_type='application/octet-stream')
 
     @app.post('/api/system/safe-mode')
     async def set_safe_mode(payload: SafeModeRequest) -> dict[str, Any]:
@@ -310,12 +393,38 @@ def build_app(
             raise HTTPException(status_code=503, detail=detail)
         return {'ok': True}
 
+    @app.post('/api/transport/speed')
+    async def set_speed(payload: SpeedRequest) -> dict[str, Any]:
+        ok_flag = await controller.set_playback_speed(payload.percent)
+        if not ok_flag:
+            detail = controller.player.last_error or controller._last_error or 'Speed unavailable'
+            raise HTTPException(status_code=503, detail=detail)
+        return {'ok': True}
+
     @app.patch('/api/clips/{deck_id}/marks')
     async def set_clip_marks(deck_id: int, payload: MarksRequest) -> dict[str, Any]:
         ok_flag = await controller.set_clip_marks(deck_id, payload.mark_in_seconds, payload.mark_out_seconds)
         if not ok_flag:
             raise HTTPException(status_code=400, detail=controller._last_error or 'Unable to set marks')
         return {'ok': True}
+
+    @app.patch('/api/clips/{deck_id}/tags')
+    async def set_clip_tags(deck_id: int, payload: TagsRequest) -> dict[str, Any]:
+        ok_flag = await controller.set_tags(deck_id, payload.tags)
+        if not ok_flag:
+            raise HTTPException(status_code=404, detail='Clip not found')
+        return {'ok': True}
+
+    @app.patch('/api/clips/{deck_id}/duration')
+    async def set_clip_duration(deck_id: int, payload: DurationRequest) -> dict[str, Any]:
+        ok_flag = await controller.set_still_duration(deck_id, payload.seconds)
+        if not ok_flag:
+            raise HTTPException(status_code=400, detail=controller._last_error or 'Unable to set duration')
+        return {'ok': True}
+
+    @app.get('/api/clips/{deck_id}/levels')
+    async def get_clip_levels(deck_id: int) -> dict[str, Any]:
+        return {'levels': await clip_store.get_audio_levels(deck_id)}
 
     @app.patch('/api/clips/{deck_id}/rename')
     async def rename_clip(deck_id: int, payload: RenameRequest) -> dict[str, Any]:
@@ -384,7 +493,17 @@ def build_app(
             await websocket.send_json({'type': 'snapshot', 'payload': await controller.snapshot()})
             while True:
                 event = await queue.get()
-                await websocket.send_json(event)
+                # Every connected browser receives the same event object; the
+                # first sender encodes it once and the others reuse the text.
+                text = event.get('_encoded')
+                if text is None:
+                    text = json.dumps(
+                        {'type': event['type'], 'payload': event['payload']},
+                        separators=(',', ':'),
+                        default=str,
+                    )
+                    event['_encoded'] = text
+                await websocket.send_text(text)
         except WebSocketDisconnect:
             pass
         finally:

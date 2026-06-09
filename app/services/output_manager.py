@@ -1,40 +1,57 @@
 from __future__ import annotations
 
+import asyncio
 import platform
 import subprocess
+import time
 from pathlib import Path
 from typing import List
 
 from app.core.models import VideoOutput
+
+# Display topology changes rarely; probing it spawns xrandr / walks sysfs, so
+# the result is cached and refreshed off the event loop.
+OUTPUT_CACHE_TTL_SECONDS = 30.0
 
 
 class OutputManager:
     def __init__(self) -> None:
         self.platform_name = platform.system().lower()
         self._selected_output_id: str | None = None
+        self._cached_outputs: list[VideoOutput] | None = None
+        self._cached_at: float = 0.0
 
     async def initialize(self) -> None:
-        outputs = await self.list_outputs()
+        outputs = await self.list_outputs(force_refresh=True)
         if outputs and self._selected_output_id is None:
             preferred = next((item for item in outputs if item.primary), outputs[0])
             self._selected_output_id = preferred.id
 
-    async def list_outputs(self) -> List[VideoOutput]:
-        outputs: list[VideoOutput] = []
-        if self.platform_name == 'darwin':
-            outputs = self._detect_macos_outputs()
-        elif self.platform_name == 'linux':
-            outputs = self._detect_linux_outputs()
-        elif self.platform_name == 'windows':
-            outputs = self._detect_windows_outputs()
-        if not outputs:
-            outputs = [VideoOutput(id='default', label='Default Display', primary=True)]
+    async def list_outputs(self, force_refresh: bool = False) -> List[VideoOutput]:
+        now = time.monotonic()
+        outputs = self._cached_outputs
+        if force_refresh or outputs is None or (now - self._cached_at) > OUTPUT_CACHE_TTL_SECONDS:
+            outputs = await asyncio.to_thread(self._detect_outputs)
+            if not outputs:
+                outputs = [VideoOutput(id='default', label='Default Display', primary=True)]
+            self._cached_outputs = outputs
+            self._cached_at = now
         for output in outputs:
             output.selected = output.id == self._selected_output_id
         return outputs
 
+    def _detect_outputs(self) -> List[VideoOutput]:
+        if self.platform_name == 'darwin':
+            return self._detect_macos_outputs()
+        if self.platform_name == 'linux':
+            return self._detect_linux_outputs()
+        if self.platform_name == 'windows':
+            return self._detect_windows_outputs()
+        return []
+
     async def set_selected_output(self, output_id: str) -> str:
         self._selected_output_id = output_id
+        self._cached_outputs = None
         return output_id
 
     async def get_selected_output(self) -> VideoOutput | None:

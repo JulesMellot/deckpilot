@@ -28,6 +28,7 @@ Browser UI ──REST + WS 8080──┘         │
 - warm `mpv` reuse: cue then play resumes the loaded clip without reloading, and stop keeps the player process warm for the next take
 - automatic player recovery if the `mpv` IPC connection drops mid-playback (re-launch and re-seek to the current position)
 - loop mode kept in sync between app state and `mpv`
+- **variable-speed playback** (10%–200%, forward only) from the web UI and the HyperDeck `play: speed:` command, with the timecode clock staying accurate at any speed; cue, stop, and new takes reset to 100%
 - live timecode with remaining-time countdown and warning/danger states as a clip nears its end
 
 ### Trim marks (in / out)
@@ -41,25 +42,34 @@ Browser UI ──REST + WS 8080──┘         │
 - mark ticks rendered on the scrub bar for quick orientation
 
 ### Media library
-- web upload for video clips, streamed to disk to keep memory low on large imports
+- web upload for video clips **and stills (PNG / JPG / WebP / GIF)**, streamed to disk to keep memory low on large imports
+- **stills playout**: configurable per-still duration (from the clip preview), infinite hold via loop, thumbnails, and playlist auto-advance like any other clip
+- **watch folder**: files dropped into the clips directory over SMB / USB are ingested automatically once their size stabilizes (no half-copied files), reusing the background enrichment pipeline
+- **clip tags** with normalized storage, tag editing from the clip preview, and tag-aware search
 - background enrichment: fast placeholder insertion, then deferred metadata + thumbnail generation with per-clip processing states and a live ETA during import
 - media folders with folder-based navigation, grid and list views, search and type filtering
 - rename, reorder (drag), move between folders, delete
 - automatic thumbnails (versioned and cache-friendly), vertical-video detection with blurred-background fill on playout
 - built-in `Black` and `Test Pattern` clips generated on first run
 
-### Playlists
+### Playlists & rundown
 - persistent playlists with activate, add/remove/reorder items, play, play-from-position, next, and loop mode
 - single-clip vs playlist playback modes
+- **per-item end behavior**: AUTO (advance), STOP, HOLD (freeze on the out frame), or LOOP — cycled with one click on the playlist item and applied live by the playout engine
+- **NEXT bar** above the transport: upcoming clip name and a live countdown to the change point (or STOP/HOLD/END notice)
+- reorder items during playback (▲/▼); the engine re-reads the rundown at each boundary
+- the default playlist keeps mirroring the media library until you edit its structure, at which point it becomes a durable rundown (end behaviors survive mirror re-syncs either way)
+- mpv runs with `keep-open` so the last frame holds at end of clip — no black flash between rundown decisions
 
 ### Output & audio
 - selectable video output (display) and video format
 - output canvas mode (auto / fixed resolution) for letterboxing control
 - master volume and mute
+- **VU meter** driven by a per-second RMS envelope precomputed by ffmpeg at import time — zero CPU cost during playback (Pi-friendly), post-fader and mute-aware
 - branded **standby slate** on the playout output when idle (grey radial-gradient background with the deck name and live network targets) instead of a black screen, regenerated when the IP changes
 
 ### HyperDeck protocol (ATEM / Companion)
-- multi-client TCP server implementing the commands ATEM and Companion use: `device info`, `configuration`, `clips get`, `transport info`, `slot info`/`slot select`, `play`, `stop`, `goto`/`start`/`end`, `playrange set`/`playrange clear`, `preview`, `notify`, `remote`, `ping`, `help`, `quit`
+- multi-client TCP server implementing the commands ATEM and Companion use: `device info`, `configuration`, `clips get`, `clips add` (by `clip id` or `name`, appends to the active playlist), `clips clear`, `transport info`, `slot info`/`slot select`, `play` (with `speed`, `loop`, `single clip` parameters), `stop`, `goto`/`start`/`end`, `playrange set`/`playrange clear`, `preview`, `notify`, `remote`, `ping`, `help`, `quit`
 - async notifications (transport / slot / clips) to subscribed controllers
 - the HyperDeck network target is shown in the web UI for easy ATEM setup
 - real-time HyperDeck logs streamed into the UI
@@ -69,14 +79,29 @@ Browser UI ──REST + WS 8080──┘         │
 - preview-enable and remote-enable toggles
 - system health panel: player status, storage, controller count, sync timestamps
 
+### Operator keyboard
+- `Space` play/pause, `Esc` stop, `Enter` cut to black, `←`/`→` previous/next clip
+- **pads `1`–`9`**: fire clip N instantly (`Shift+N` cues it instead) — the CasparCG / vMix reflex
+- `F1` grid view / `F2` list view in the media pool
+
+### Backup & portability
+- **JSON export/import** of the whole library state (names, folders, marks, loop flags, tags, still durations, playlists with end behaviors), matched by filename for reproducible installs
+- **SQLite backup endpoint** producing a consistent copy of the database, downloadable from the settings panel
+
 ### UI & performance
 - WebSocket-driven incremental updates instead of full rerenders
 - DOM node reuse, event delegation, and light virtualization for large media/playlist views
 - static assets are cache-busted by file mtime, so a browser always loads fresh CSS/JS after an update (no manual hard-refresh needed beyond the first time)
+- **zero-DB steady state**: the clip list, processing counters, and playlist payloads are served from an in-memory cache (write-invalidated, generation-guarded), so the 1 Hz transport tick and the health reporter never touch SQLite
+- **display probing cached** (30 s TTL, off the event loop): no more `xrandr` fork every 2 seconds on Linux
+- **quiet wire**: transport/health/safety snapshots are only broadcast when they actually changed, one shared JSON encode serves every connected browser, and HyperDeck log lines are batched into the UI terminal
+- **SD-card-friendly storage**: SQLite in WAL mode with `synchronous=NORMAL` and no HTTP access log
+- **bounded mpv memory** (`demuxer-max-bytes=48MiB`) and cheap off-speed audio for 1 GB-class boards
+- **fast imports**: thumbnails use seek-before-input single-frame extraction (instead of decoding ~100 frames), enrichment workers capped at 2 by default to keep playout headroom
 
 ## Control Surface
 
-- **REST**: `/api/state`, `/api/clips*`, `/api/clips/{id}/{goto,play,marks,rename,loop,folder}`, `/api/transport/{stop,pause,resume,seek}`, `/api/playlists*`, `/api/system/{outputs,output,output-canvas,video-format,black,safe-mode,arm-controls,update}`, `/api/audio/{volume,mute}`, `/api/upload`
+- **REST**: `/api/state`, `/api/clips*`, `/api/clips/{id}/{goto,play,marks,rename,loop,folder,tags,duration,levels}`, `/api/transport/{stop,pause,resume,seek,speed}`, `/api/playlists*` (incl. per-item end behavior and item reorder), `/api/system/{outputs,output,output-canvas,video-format,black,safe-mode,arm-controls,update,export,import,backup}`, `/api/audio/{volume,mute}`, `/api/upload`
 - **WebSocket**: `/ws` streams transport, clips, folders, playlists, audio, outputs, health, logs, and safety snapshots
 - **HyperDeck TCP**: port `9993` (see commands above)
 
@@ -140,6 +165,8 @@ Useful environment overrides for local profiling or custom installs:
 - `PIDECK_HYPERDECK_PORT` - change the HyperDeck TCP port
 - `PIDECK_CONFIG` - point to a custom `config.json`
 - `PIDECK_MEDIA_ENRICHMENT_WORKERS` - tune concurrent background media enrichment workers
+- `PIDECK_WATCH_FOLDER_SECONDS` - watch-folder scan interval (0 disables the watcher)
+- `PIDECK_DEFAULT_IMAGE_DURATION_SECONDS` - default playout duration for stills
 
 Configuration lives in `config.json` (see `config.json.example`): ports, media/data directories, `mpv`/`ffmpeg` binaries, default video format and framerate, WebSocket tick rate, and allowed upload extensions.
 
@@ -174,6 +201,16 @@ DeckPilot is in **alpha / early beta**. It is already usable for testing and rea
 
 ### Done
 - playback core: cue / play resume / stop with warm `mpv`, loop sync, automatic player recovery
+- variable-speed playback (10%–200%) via the UI speed pad and the HyperDeck `play: speed:` parameter, speed-aware timecode clock
+- HyperDeck timeline commands `clips add` / `clips clear` mapped to the active playlist (Companion remote rundowns)
+- keyboard pads 1–9 (fire) / Shift+1–9 (cue), F1/F2 media views
+- stills (PNG/JPG/WebP/GIF) with per-still duration, thumbnails, and playlist integration
+- watch folder auto-ingest with copy-stability detection
+- JSON export/import of library metadata + playlists, SQLite backup endpoint
+- rundown: per-item end behavior (auto/stop/hold/loop), NEXT bar with countdown, live item reorder, keep-open output
+- clip tags + tag-aware search
+- VU meter from precomputed ffmpeg RMS envelopes (no runtime CPU cost)
+- Windows mpv IPC over named pipes (runtime still to be validated on hardware)
 - timeline scrubbing (seek slider + ±10s nudge) backed by `mpv time-pos`
 - per-clip in/out marks: persisted, mark-aware playback (start at in, stop/advance at out, loop in window), mark-aware remaining timer
 - set marks from the live transport and from the browser preview (with mini-timeline, ticks, and live playhead)
@@ -195,16 +232,15 @@ DeckPilot is in **alpha / early beta**. It is already usable for testing and rea
 
 ### Planned (mid term)
 - stronger cross-platform output handling and multi-display control
-- improved Windows runtime support for `mpv` IPC and playback
+- Windows runtime validation (named-pipe IPC is implemented but untested on hardware)
 - better logging, monitoring, and fault reporting for live use
 - expanded automated test coverage for the protocol and services
 - packaging / release workflow and native installer packages
 
 ### Exploring (long term)
-- advanced playlist and rundown workflow
 - richer operator dashboards and status views
-- optional clip tags and smarter media search
-- configurable operator profiles or locked-down UI modes
+- configurable operator profiles or locked-down UI modes (and authentication)
+- recording from a capture input
 - richer ATEM debugging tools
 
 ## Contributing

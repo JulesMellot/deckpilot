@@ -90,7 +90,7 @@ class HyperDeckServer:
 
     async def _dispatch(self, session: HyperDeckSession, line: str) -> bytes | None:
         command, params = parse_command(line)
-        controlled_commands = {'play', 'stop', 'goto', 'playrange set', 'playrange clear'}
+        controlled_commands = {'play', 'stop', 'goto', 'playrange set', 'playrange clear', 'clips add', 'clips clear'}
         if command in controlled_commands and (not self.state.remote_enabled or not session.remote_enabled):
             return error('remote disabled')
         if command == 'device info':
@@ -105,6 +105,16 @@ class HyperDeckServer:
                 'audio inputs: 1',
                 f'clip count: {len(clips)}',
             )
+        if command == 'clips add':
+            clip_id = int(params.get('clip id', '0') or 0)
+            name = params.get('name')
+            if not clip_id and not name:
+                return error('missing clip id or name')
+            success = await self.controller.protocol_clips_add(clip_id=clip_id or None, name=name)
+            return ok() if success else error('unknown clip')
+        if command == 'clips clear':
+            success = await self.controller.protocol_clips_clear()
+            return ok() if success else error('timeline unavailable')
         if command == 'clips get':
             clips = await self.controller.list_clips()
             lines = [f'clip count: {len(clips)}']
@@ -150,8 +160,19 @@ class HyperDeckServer:
         if command == 'play':
             loop = boolish(params.get('loop'), self.state.transport.loop)
             single_clip = boolish(params.get('single clip'), self.state.transport.single_clip)
+            speed: float | None = None
+            if 'speed' in params:
+                try:
+                    speed = float(params['speed'])
+                except ValueError:
+                    return error('invalid speed')
+                if speed == 0:
+                    await self.controller.pause()
+                    return ok()
+                if speed < 0:
+                    return error('reverse playback not supported')
             target_clip_id = self.state.playrange_clip_id or self.state.transport.clip_id or None
-            success = await self.controller.play(clip_id=target_clip_id, loop=loop, single_clip=single_clip)
+            success = await self.controller.play(clip_id=target_clip_id, loop=loop, single_clip=single_clip, speed=speed)
             return ok() if success else error(self.controller.player.last_error or 'playback unavailable')
         if command == 'stop':
             await self.controller.stop_playback()
@@ -212,11 +233,15 @@ class HyperDeckServer:
                 'help:',
                 'device info',
                 'clips get',
+                'clips add: clip id: <n>',
+                'clips add: name: <clip name>',
+                'clips clear',
                 'transport info',
                 'slot info',
                 'slot select: slot id: 1',
                 'configuration',
                 'play',
+                'play: speed: <10-200> loop: <true|false> single clip: <true|false>',
                 'stop',
                 'goto: clip id: <n>',
                 'goto: clip: <start|end>',

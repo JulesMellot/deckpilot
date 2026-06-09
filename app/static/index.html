@@ -49,7 +49,12 @@
         <div class="clip-title-marquee">
           <h2 id="live-clip-name">NO CLIP LOADED</h2>
         </div>
-        
+        <div class="next-clip-bar" id="next-clip-bar" hidden>
+          <span class="next-clip-label">NEXT</span>
+          <span class="next-clip-name" id="next-clip-name">--</span>
+          <span class="next-clip-countdown" id="next-clip-countdown">-00:00:00</span>
+        </div>
+
         <div class="timecode-massive" id="live-timecode">00:00:00</div>
         
         <div class="timecode-details">
@@ -85,6 +90,17 @@
             <button id="btn-seek-back" class="action-btn" type="button">-10S</button>
             <button id="btn-seek-forward" class="action-btn" type="button">+10S</button>
           </div>
+          <div class="transport-speed">
+            <span class="transport-speed-label" id="transport-speed-label">SPEED</span>
+            <div class="transport-speed-buttons" id="transport-speed-buttons">
+              <button class="action-btn speed-btn" data-speed="25" type="button">25</button>
+              <button class="action-btn speed-btn" data-speed="50" type="button">50</button>
+              <button class="action-btn speed-btn" data-speed="75" type="button">75</button>
+              <button class="action-btn speed-btn" data-speed="100" type="button">100</button>
+              <button class="action-btn speed-btn" data-speed="150" type="button">150</button>
+              <button class="action-btn speed-btn" data-speed="200" type="button">200</button>
+            </div>
+          </div>
           <div class="transport-marks">
             <div class="transport-marks-actions">
               <button id="btn-mark-in" class="action-btn mark-btn mark-btn-in" type="button" title="Set the in point at the current position">SET IN</button>
@@ -104,6 +120,9 @@
       <div class="transport-audio-panel">
         <div class="transport-audio-header">AUDIO MIXER</div>
         <div class="transport-audio-body">
+          <div class="vu-meter" id="vu-meter">
+            <div class="vu-meter-fill" id="vu-meter-fill"></div>
+          </div>
           <div class="transport-audio-row">
             <div class="transport-audio-label">MAIN</div>
             <input type="range" id="config-volume" class="horizontal-fader" min="0" max="100" value="100">
@@ -276,7 +295,10 @@
     <button class="playlist-item">
       <span class="playlist-item-pos">01</span>
       <span class="playlist-item-name">Clip</span>
+      <span class="playlist-item-end" data-role="end-behavior" title="End behavior: AUTO advances, STOP ends, HOLD freezes the last frame, LOOP repeats">AUTO</span>
       <span class="playlist-item-time">00:00:00</span>
+      <span class="playlist-item-move playlist-item-move-up" data-role="move-up" title="Move up">▲</span>
+      <span class="playlist-item-move playlist-item-move-down" data-role="move-down" title="Move down">▼</span>
       <span class="playlist-item-remove">×</span>
     </button>
   </template>
@@ -311,6 +333,16 @@
             <span class="transport-mark-chip transport-mark-chip-trim"><span class="transport-mark-key">CLIP</span><span id="preview-mark-trim-value">--</span></span>
           </div>
         </div>
+      </div>
+      <div class="preview-still-duration" id="preview-still-duration" hidden>
+        <span class="transport-speed-label">STILL DURATION (S)</span>
+        <input id="preview-duration-input" class="select-box preview-duration-input" type="number" min="0.5" step="0.5" value="10">
+        <button id="btn-preview-duration" class="action-btn" type="button">SET</button>
+      </div>
+      <div class="preview-tags-row">
+        <span class="transport-speed-label">TAGS</span>
+        <span class="preview-tags-value" id="preview-tags-value">--</span>
+        <button id="btn-preview-tags" class="action-btn" type="button">EDIT</button>
       </div>
       <div class="preview-actions">
         <button id="btn-preview-play" class="action-btn">PLAY OUT</button>
@@ -369,6 +401,16 @@
           <label>SYSTEM UPDATE</label>
           <div class="settings-update-meta" id="update-meta">Checking update status...</div>
           <button id="btn-run-update" class="action-btn">UPDATE NOW</button>
+        </div>
+        <div class="form-row settings-update-row">
+          <label>LIBRARY MAINTENANCE</label>
+          <div class="settings-update-meta">Export or import names, folders, marks, tags, and playlists as JSON, or download a consistent copy of the SQLite database.</div>
+          <div class="settings-maintenance-actions">
+            <button id="btn-export-library" class="action-btn" type="button">EXPORT JSON</button>
+            <button id="btn-import-library" class="action-btn" type="button">IMPORT JSON</button>
+            <button id="btn-backup-db" class="action-btn" type="button">BACKUP DB</button>
+            <input id="import-file-input" type="file" accept="application/json,.json" hidden>
+          </div>
         </div>
       </div>
     </div>

@@ -53,8 +53,13 @@ class AppState:
 
     async def set_transport(self, **updates: Any) -> None:
         async with self._lock:
+            changed = False
             for key, value in updates.items():
-                setattr(self.transport, key, value)
+                if getattr(self.transport, key) != value:
+                    setattr(self.transport, key, value)
+                    changed = True
+            if not changed:
+                return
             snapshot = self.transport.to_dict()
         await self.publish("transport", snapshot)
 

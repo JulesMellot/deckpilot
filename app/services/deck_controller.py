@@ -15,6 +15,12 @@ from app.services.network_info import NetworkInfoService
 from app.services.output_manager import OutputManager
 from app.services.standby_slate import StandbySlateService
 
+# Forward-only speed window. Reverse playback is intentionally unsupported: mpv
+# backward decode needs a large demuxer back-cache, which a Pi-class SBC cannot
+# sustain at 1080p. Above 2x the Pi 3B+ decoder starts dropping frames.
+PLAYBACK_SPEED_MIN_PERCENT = 10
+PLAYBACK_SPEED_MAX_PERCENT = 200
+
 
 class DeckController:
     def __init__(
@@ -40,6 +46,7 @@ class DeckController:
         self._play_started_at: float | None = None
         self._pause_started_at: float | None = None
         self._accumulated_pause_seconds: float = 0.0
+        self._speed: float = 1.0
         self._ticker_task: asyncio.Task | None = None
         self._health_task: asyncio.Task | None = None
         self._volume: int = 100
@@ -52,6 +59,8 @@ class DeckController:
         self._last_error_key: str | None = None
         self._recovering_player = False
         self._media_publish_task: asyncio.Task | None = None
+        self._last_health_payload: Dict[str, Any] | None = None
+        self._last_safety_payload: Dict[str, Any] | None = None
 
     async def start(self) -> None:
         self._ticker_task = asyncio.create_task(self._ticker())
@@ -124,6 +133,24 @@ class DeckController:
         await self.state.publish('slot', await self.slot_snapshot())
         await self._publish_health()
 
+    def _speed_percent(self) -> int:
+        return int(round(self._speed * 100))
+
+    def _clamp_speed_percent(self, percent: float) -> int:
+        return int(round(max(float(PLAYBACK_SPEED_MIN_PERCENT), min(float(percent), float(PLAYBACK_SPEED_MAX_PERCENT)))))
+
+    def _clock_elapsed(self, now: float | None = None) -> float:
+        """Media-time position derived from the wall clock, scaled by playback speed."""
+        if self._play_started_at is None:
+            return max(0.0, float(self.state.transport.elapsed_seconds or 0.0))
+        anchor = self._pause_started_at if self._pause_started_at is not None else (now if now is not None else time.monotonic())
+        return max(0.0, (anchor - self._play_started_at - self._accumulated_pause_seconds) * self._speed)
+
+    def _anchor_clock(self, elapsed: float, now: float | None = None) -> None:
+        """Reposition the wall clock so _clock_elapsed(now) equals ``elapsed``."""
+        anchor = self._pause_started_at if self._pause_started_at is not None else (now if now is not None else time.monotonic())
+        self._play_started_at = anchor - self._accumulated_pause_seconds - (elapsed / self._speed)
+
     async def goto_clip(self, clip_id: int) -> bool:
         clip = await self.clip_store.get_clip(clip_id)
         if not clip:
@@ -143,13 +170,15 @@ class DeckController:
             return False
         self.current_clip_id = clip.deck_id
         now = time.monotonic()
-        self._play_started_at = now - in_point
+        self._speed = 1.0
         self._pause_started_at = now
         self._accumulated_pause_seconds = 0.0
+        self._anchor_clock(in_point, now)
         cue_timecode = seconds_to_timecode(in_point, clip.framerate)
         await self.state.set_transport(
             status='stopped',
             speed=0,
+            playback_speed_percent=100,
             clip_id=clip.deck_id,
             timecode=cue_timecode,
             display_timecode=cue_timecode,
@@ -166,7 +195,18 @@ class DeckController:
         await self._publish_health()
         return True
 
-    async def play(self, clip_id: int | None = None, loop: bool | None = None, single_clip: bool | None = None) -> bool:
+    async def play(
+        self,
+        clip_id: int | None = None,
+        loop: bool | None = None,
+        single_clip: bool | None = None,
+        speed: float | None = None,
+    ) -> bool:
+        if speed is not None and float(speed) <= 0:
+            await self._report_error('playback', 'Reverse or zero-speed playback is not supported.')
+            await self._publish_health()
+            return False
+        speed_percent = 100 if speed is None else self._clamp_speed_percent(speed)
         target_clip_id = clip_id or self.current_clip_id
         if not target_clip_id:
             await self._report_error('playback', 'Cannot play: no clip is currently loaded.')
@@ -190,21 +230,25 @@ class DeckController:
             and await self.player.is_available()
         ):
             resumed_at = time.monotonic()
+            elapsed_at_resume = self._clock_elapsed(resumed_at)
             if not await self.player.set_loop(use_loop):
                 await self._report_error('player', f'Loop update failed for "{clip.name}": {self.player.last_error or "unknown player error"}')
                 await self._publish_health()
                 return False
+            speed_percent = await self._apply_player_speed(speed_percent, fallback_percent=self._speed_percent())
             if not await self.player.pause(False):
                 await self._report_error('player', f'Resume failed for "{clip.name}": {self.player.last_error or "unknown player error"}')
                 await self._publish_health()
                 return False
-            self._play_started_at = resumed_at
             if self._pause_started_at is not None:
                 self._accumulated_pause_seconds += resumed_at - self._pause_started_at
-            self._pause_started_at = None
+                self._pause_started_at = None
+            self._speed = speed_percent / 100
+            self._anchor_clock(elapsed_at_resume, resumed_at)
             await self.state.set_transport(
                 status='play',
-                speed=100,
+                speed=speed_percent,
+                playback_speed_percent=speed_percent,
                 clip_id=clip.deck_id,
                 loop=use_loop,
                 single_clip=bool(single_clip),
@@ -225,12 +269,16 @@ class DeckController:
         started = await self._start_clip_playback(clip, use_loop, start_seconds=in_point)
         if not started:
             return False
-        self._play_started_at = time.monotonic() - in_point
+        if speed_percent != 100:
+            speed_percent = await self._apply_player_speed(speed_percent, fallback_percent=100)
+        self._speed = speed_percent / 100
         self._pause_started_at = None
         self._accumulated_pause_seconds = 0.0
+        self._anchor_clock(in_point, time.monotonic())
         await self.state.set_transport(
             status='play',
-            speed=100,
+            speed=speed_percent,
+            playback_speed_percent=speed_percent,
             clip_id=clip.deck_id,
             loop=use_loop,
             single_clip=bool(single_clip),
@@ -245,6 +293,44 @@ class DeckController:
             playlist_loop=self._playlist_loop,
             playlist_position=await self._playlist_position_for_clip(clip.deck_id),
             **self._mark_transport_fields(clip),
+        )
+        self._last_error = None
+        self._last_error_key = None
+        await self._publish_health()
+        return True
+
+    async def _apply_player_speed(self, percent: int, fallback_percent: int) -> int:
+        """Push a playback speed to mpv. A failed speed change must never kill a
+        running take, so on error report it and return the speed still in effect."""
+        if await self.player.set_speed(percent / 100):
+            return percent
+        await self._report_error('player', f'Speed update failed: {self.player.last_error or "unknown player error"}')
+        return fallback_percent
+
+    async def set_playback_speed(self, percent: float) -> bool:
+        if percent is None or float(percent) <= 0:
+            await self._report_error('playback', 'Reverse or zero-speed playback is not supported.')
+            await self._publish_health()
+            return False
+        clip_id = self.current_clip_id or self.state.transport.clip_id
+        if not clip_id:
+            await self._report_error('playback', 'Cannot change speed: no clip is currently loaded.')
+            await self._publish_health()
+            return False
+        speed_percent = self._clamp_speed_percent(percent)
+        if not await self.player.is_available() or not await self.player.set_speed(speed_percent / 100):
+            await self._report_error('player', f'Speed update failed: {self.player.last_error or "player unavailable"}')
+            await self._publish_health()
+            return False
+        now = time.monotonic()
+        elapsed = self._clock_elapsed(now)
+        self._speed = speed_percent / 100
+        if self._play_started_at is not None:
+            self._anchor_clock(elapsed, now)
+        is_running = self.state.transport.status == 'play' and not self.state.transport.paused
+        await self.state.set_transport(
+            speed=speed_percent if is_running else 0,
+            playback_speed_percent=speed_percent,
         )
         self._last_error = None
         self._last_error_key = None
@@ -268,7 +354,7 @@ class DeckController:
         if self._pause_started_at is not None:
             self._accumulated_pause_seconds += time.monotonic() - self._pause_started_at
             self._pause_started_at = None
-        await self.state.set_transport(status='play', paused=False, speed=100)
+        await self.state.set_transport(status='play', paused=False, speed=self._speed_percent())
 
     async def seek_current_clip(self, seconds: float) -> bool:
         clip_id = self.current_clip_id or self.state.transport.clip_id
@@ -298,10 +384,9 @@ class DeckController:
         now = time.monotonic()
         if self.state.transport.paused:
             self._pause_started_at = self._pause_started_at or now
-            self._play_started_at = self._pause_started_at - target - self._accumulated_pause_seconds
         else:
-            self._play_started_at = now - target - self._accumulated_pause_seconds
             self._pause_started_at = None
+        self._anchor_clock(target, now)
         await self._set_transport_position(clip, target)
         self._last_error = None
         self._last_error_key = None
@@ -352,10 +437,12 @@ class DeckController:
         self._play_started_at = None
         self._pause_started_at = None
         self._accumulated_pause_seconds = 0.0
+        self._speed = 1.0
         self._playlist_mode = False
         await self.state.set_transport(
             status='stopped',
             speed=0,
+            playback_speed_percent=100,
             paused=False,
             elapsed_seconds=0.0,
             remaining_seconds=self.state.transport.total_seconds,
@@ -365,6 +452,35 @@ class DeckController:
         )
         await self._enter_standby(force=True)
         await self._publish_health()
+
+    async def protocol_clips_add(self, clip_id: int | None = None, name: str | None = None) -> bool:
+        clip = None
+        if clip_id:
+            clip = await self.clip_store.get_clip(clip_id)
+        elif name:
+            target = name.strip().lower()
+            clips = await self.clip_store.list_clips()
+            clip = next((c for c in clips if c.name.lower() == target or c.filename.lower() == target), None)
+        if not clip:
+            return False
+        playlist = await self.playlist_store.get_active_playlist()
+        summary = playlist.get('playlist')
+        if not summary:
+            return False
+        await self.playlist_store.add_clip_to_playlist(summary['id'], clip.deck_id)
+        await self.state.add_log('info', 'hyperdeck', f'Timeline add: "{clip.name}" appended to "{summary["name"]}".')
+        await self._publish_media_state()
+        return True
+
+    async def protocol_clips_clear(self) -> bool:
+        playlist = await self.playlist_store.get_active_playlist()
+        summary = playlist.get('playlist')
+        if not summary:
+            return False
+        await self.playlist_store.clear_playlist(summary['id'])
+        await self.state.add_log('info', 'hyperdeck', f'Timeline cleared: "{summary["name"]}".')
+        await self._publish_media_state()
+        return True
 
     async def cut_to_black(self) -> bool:
         clips = await self.clip_store.list_clips()
@@ -377,6 +493,39 @@ class DeckController:
     async def rename_clip(self, deck_id: int, name: str) -> None:
         await self.clip_store.rename_clip(deck_id, name)
         await self.refresh_clips()
+
+    async def set_tags(self, deck_id: int, tags: str) -> bool:
+        clip = await self.clip_store.get_clip(deck_id)
+        if not clip:
+            return False
+        await self.clip_store.set_tags(deck_id, tags)
+        await self.refresh_clips()
+        return True
+
+    async def set_still_duration(self, deck_id: int, seconds: float) -> bool:
+        clip = await self.clip_store.get_clip(deck_id)
+        if not clip:
+            await self._report_error('playback', f'Cannot set duration for clip {deck_id}: clip not found.')
+            await self._publish_health()
+            return False
+        if clip.media_kind != 'image':
+            await self._report_error('playback', f'Cannot set duration for "{clip.name}": only stills have a configurable duration.')
+            await self._publish_health()
+            return False
+        if float(seconds or 0) <= 0:
+            await self._report_error('playback', f'Cannot set duration for "{clip.name}": duration must be positive.')
+            await self._publish_health()
+            return False
+        await self.clip_store.set_duration(deck_id, float(seconds))
+        await self.refresh_clips()
+        if self.current_clip_id == deck_id:
+            updated = await self.clip_store.get_clip(deck_id)
+            if updated:
+                await self._set_transport_position(updated, float(self.state.transport.elapsed_seconds or 0.0))
+        self._last_error = None
+        self._last_error_key = None
+        await self._publish_health()
+        return True
 
     async def set_loop(self, deck_id: int, enabled: bool) -> None:
         updated = await self.clip_store.set_loop(deck_id, enabled)
@@ -455,7 +604,8 @@ class DeckController:
         else:
             next_item = items[current_position]
         self._playlist_mode = True
-        return await self.play(clip_id=next_item['clip_id'], loop=False, single_clip=False)
+        loop_item = (next_item.get('end_behavior') or 'next') == 'loop'
+        return await self.play(clip_id=next_item['clip_id'], loop=loop_item, single_clip=False)
 
     async def play_playlist_from_position(self, position: int, loop: bool | None = None) -> bool:
         playlist = await self.playlist_store.get_active_playlist()
@@ -466,7 +616,8 @@ class DeckController:
         self._playlist_mode = True
         if loop is not None:
             self._playlist_loop = loop
-        return await self.play(clip_id=items[index]['clip_id'], loop=False, single_clip=False)
+        loop_item = (items[index].get('end_behavior') or 'next') == 'loop'
+        return await self.play(clip_id=items[index]['clip_id'], loop=loop_item, single_clip=False)
 
     async def list_outputs(self) -> list[dict[str, Any]]:
         outputs = await self.output_manager.list_outputs()
@@ -568,6 +719,31 @@ class DeckController:
             'storage_total_bytes': total_bytes,
         }
 
+    async def export_snapshot(self) -> Dict[str, Any]:
+        clips = await self.clip_store.list_clips()
+        filenames = {clip.deck_id: clip.filename for clip in clips}
+        return {
+            'format': 'deckpilot-export',
+            'version': 1,
+            'app_name': self.config.app_name,
+            'clips': await self.clip_store.export_entries(),
+            'folders': await self.clip_store.list_folders(),
+            'playlists': await self.playlist_store.export_playlists(filenames),
+        }
+
+    async def import_snapshot(self, payload: Dict[str, Any]) -> Dict[str, int]:
+        if not isinstance(payload, dict) or payload.get('format') != 'deckpilot-export':
+            raise ValueError('Not a DeckPilot export file.')
+        for folder in payload.get('folders') or []:
+            if isinstance(folder, str) and folder.strip():
+                await self.clip_store.create_folder(folder)
+        clips_applied = await self.clip_store.apply_import_entries(payload.get('clips') or [])
+        clips = await self.clip_store.list_clips()
+        ids_by_filename = {clip.filename: clip.deck_id for clip in clips}
+        playlists_applied = await self.playlist_store.apply_import(payload.get('playlists') or [], ids_by_filename)
+        await self.refresh_clips()
+        return {'clips': clips_applied, 'playlists': playlists_applied}
+
     async def snapshot(self) -> Dict[str, Any]:
         clips = await self.clip_store.list_clips()
         return {
@@ -589,6 +765,24 @@ class DeckController:
             'safety': self.state.safety_snapshot(),
             'app_name': self.config.app_name,
         }
+
+    async def _current_playlist_end_behavior(self) -> str:
+        playlist = await self.playlist_store.get_active_playlist()
+        items = playlist.get('items', [])
+        current_id = self.current_clip_id or self.state.transport.clip_id
+        item = next((entry for entry in items if entry['clip_id'] == current_id), None)
+        return (item or {}).get('end_behavior') or 'next'
+
+    async def _hold_at_position(self, clip, position_seconds: float) -> None:
+        """End-of-item HOLD: freeze on the out frame and wait for the operator."""
+        if not await self.player.pause(True):
+            await self.stop_playback()
+            return
+        now = time.monotonic()
+        self._pause_started_at = now
+        self._anchor_clock(position_seconds, now)
+        await self._set_transport_position(clip, position_seconds)
+        await self.state.set_transport(status='stopped', paused=True, speed=0)
 
     async def _playlist_position_for_clip(self, clip_id: int) -> int:
         playlist = await self.playlist_store.get_active_playlist()
@@ -612,14 +806,17 @@ class DeckController:
                 await self._report_error('playback', f'Current clip {self.current_clip_id} no longer exists.')
                 await self.stop_playback()
                 continue
-            if self._pause_started_at is not None:
-                elapsed = max(0.0, (self._pause_started_at - self._play_started_at) - self._accumulated_pause_seconds)
-            else:
-                elapsed = max(0.0, (time.monotonic() - self._play_started_at) - self._accumulated_pause_seconds)
+            elapsed = self._clock_elapsed()
             in_point, out_point = clip.trim_bounds()
             if not self.state.transport.loop and out_point > 0 and elapsed >= out_point:
                 if self._playlist_mode:
-                    await self.play_next_playlist_item()
+                    behavior = await self._current_playlist_end_behavior()
+                    if behavior == 'stop':
+                        await self.stop_playback()
+                    elif behavior == 'hold':
+                        await self._hold_at_position(clip, out_point)
+                    else:
+                        await self.play_next_playlist_item()
                 else:
                     await self.stop_playback()
                 continue
@@ -632,10 +829,18 @@ class DeckController:
         while True:
             await asyncio.sleep(2.0)
             await self._publish_health()
-            await self.state.publish('safety', self.state.safety_snapshot())
+            safety = self.state.safety_snapshot()
+            if safety != self._last_safety_payload:
+                self._last_safety_payload = safety
+                await self.state.publish('safety', safety)
 
     async def _publish_health(self) -> None:
-        await self.state.publish('health', await self.health_snapshot())
+        # Idle decks should be silent: only broadcast health when it changed.
+        payload = await self.health_snapshot()
+        if payload == self._last_health_payload:
+            return
+        self._last_health_payload = payload
+        await self.state.publish('health', payload)
 
     async def _media_processing_snapshot(self) -> Dict[str, int]:
         processing_method = getattr(self.clip_store, 'processing_status', None)
@@ -740,7 +945,14 @@ class DeckController:
                 return False
             await self._report_error('player', 'Player connection lost. Attempting automatic recovery.')
             resume_at = max(0.0, float(self.state.transport.elapsed_seconds or 0.0))
-            return await self._start_clip_playback(clip, self.state.transport.loop, start_seconds=resume_at)
+            started = await self._start_clip_playback(clip, self.state.transport.loop, start_seconds=resume_at)
+            if started:
+                if self._speed_percent() != 100:
+                    applied = await self._apply_player_speed(self._speed_percent(), fallback_percent=100)
+                    self._speed = applied / 100
+                self._pause_started_at = None
+                self._anchor_clock(resume_at)
+            return started
         finally:
             self._recovering_player = False
 

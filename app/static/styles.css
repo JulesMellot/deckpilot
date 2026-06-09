@@ -346,6 +346,116 @@ header { grid-area: header; }
   white-space: nowrap;
 }
 
+.next-clip-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.35rem 0.6rem;
+  margin-bottom: 0.6rem;
+  border: 1px solid var(--border-dim);
+  border-left: 3px solid var(--color-ready);
+  background: rgba(0, 211, 98, 0.06);
+  font-family: var(--font-mono);
+}
+
+.next-clip-label {
+  font-size: 0.72rem;
+  letter-spacing: 0.12em;
+  color: var(--color-ready);
+}
+
+.next-clip-name {
+  flex: 1;
+  font-size: 0.95rem;
+  color: var(--text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.next-clip-countdown {
+  font-size: 1.1rem;
+  color: var(--color-ready);
+}
+
+.next-clip-bar.is-terminal {
+  border-left-color: #ff9f1a;
+  background: rgba(255, 159, 26, 0.06);
+}
+
+.next-clip-bar.is-terminal .next-clip-label,
+.next-clip-bar.is-terminal .next-clip-countdown {
+  color: #ff9f1a;
+}
+
+.vu-meter {
+  position: relative;
+  height: 8px;
+  border: 1px solid var(--border-dim);
+  background: linear-gradient(to right, #00d362 0%, #00d362 66%, #ff9f1a 66%, #ff9f1a 85%, #ff2a2a 85%, #ff2a2a 100%);
+  margin-bottom: 0.5rem;
+  overflow: hidden;
+}
+
+/* Right-anchored shutter covering the unused part of the fixed gradient. */
+.vu-meter-fill {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 100%;
+  background: var(--bg-app);
+  transition: width 0.25s linear;
+}
+
+.vu-meter.muted {
+  opacity: 0.35;
+}
+
+.transport-speed {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.transport-speed-label {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  white-space: nowrap;
+  min-width: 4.6rem;
+}
+
+.transport-speed-label.is-offspeed {
+  color: #ff9f1a;
+}
+
+.transport-speed-buttons {
+  display: flex;
+  gap: 0.35rem;
+  flex: 1;
+}
+
+.transport-speed-buttons .speed-btn {
+  flex: 1;
+  justify-content: center;
+  font-family: var(--font-mono);
+  padding: 0.25rem 0.2rem;
+}
+
+.transport-speed-buttons .speed-btn.active {
+  border-color: #ff9f1a;
+  color: #ff9f1a;
+  background: rgba(255, 159, 26, 0.1);
+}
+
+.transport-speed-buttons .speed-btn[data-speed="100"].active {
+  border-color: var(--color-ready);
+  color: var(--color-ready);
+  background: rgba(0, 211, 98, 0.1);
+}
+
 .transport-marks {
   display: flex;
   flex-direction: column;
@@ -384,6 +494,61 @@ header { grid-area: header; }
 .transport-marks-readout {
   display: flex;
   gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.playlist-item-end {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  padding: 0.1rem 0.3rem;
+  border: 1px solid var(--border-dim);
+  border-radius: 3px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+.playlist-item-end.is-stop { color: var(--color-live); border-color: rgba(255, 42, 42, 0.5); }
+.playlist-item-end.is-hold { color: #ff9f1a; border-color: rgba(255, 159, 26, 0.5); }
+.playlist-item-end.is-loop { color: var(--color-accent); border-color: rgba(0, 122, 204, 0.5); }
+
+.playlist-item-move {
+  font-size: 0.6rem;
+  color: var(--text-dim);
+  padding: 0.1rem 0.25rem;
+  flex-shrink: 0;
+}
+
+.playlist-item-move:hover {
+  color: var(--text-main);
+}
+
+.preview-still-duration,
+.preview-tags-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 0.6rem;
+}
+
+.preview-duration-input {
+  width: 6rem;
+  font-family: var(--font-mono);
+}
+
+.preview-tags-value {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.settings-maintenance-actions {
+  display: flex;
+  gap: 0.5rem;
   flex-wrap: wrap;
 }
 

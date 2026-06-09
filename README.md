@@ -18,11 +18,16 @@ DeckPilot provides:
 
 - HyperDeck protocol support for ATEM and Bitfocus Companion
 - web upload for video clips
+- streamed uploads to reduce memory pressure on large imports
 - play, stop, pause, cue, and cut-to-black controls
+- improved cue/play reliability with warm `mpv` reuse
+- loop handling synchronized between app state and `mpv`
 - persistent playlists with playback and loop mode
 - media folders with folder-based navigation
 - browser preview per clip
 - automatic thumbnail generation
+- background media enrichment for metadata and thumbnails
+- per-clip processing states with real-time ETA in the UI during import
 - selectable video output
 - selectable video format
 - audio volume and mute control
@@ -30,6 +35,8 @@ DeckPilot provides:
 - vertical video detection with blurred background fill on playout
 - real-time HyperDeck logs in the UI
 - media grid and list views
+- lightweight list virtualization and delegated events for large media libraries
+- WebSocket-driven incremental UI updates instead of full rerenders
 
 ## Technology Stack
 
@@ -78,14 +85,25 @@ irm https://raw.githubusercontent.com/JulesMellot/deckpilot/main/scripts/bootstr
 
 - `app/core/` - configuration, models, and shared state
 - `app/hyperdeck/` - HyperDeck protocol parsing and multi-client server
-- `app/media/` - clips, playlists, folders, metadata, thumbnails
+- `app/media/` - clips, playlists, folders, metadata, thumbnails, background enrichment
 - `app/player/` - `mpv` control layer
 - `app/services/` - playback orchestration, networking, outputs
 - `app/web/` - FastAPI routes and WebSocket layer
-- `app/static/` - frontend assets
+- `app/static/` - frontend assets, incremental rendering, large-list optimizations
 - `scripts/` - install and test helpers
 - `deploy/` - `systemd` service files
 - `docs/` - installation documentation
+
+## Performance Notes
+
+Recent work has focused heavily on responsiveness and large-library behavior.
+
+- uploads return quickly and continue metadata / thumbnail work in the background
+- media processing publishes incremental updates over WebSocket
+- the web UI shows processing progress and an estimated remaining time during imports
+- slow WebSocket subscribers are isolated with bounded queues
+- large media and playlist views reduce DOM churn with node reuse, event delegation, and light virtualization
+- thumbnails are versioned and cache-friendly to avoid stale-image issues
 
 ## Local Run
 
@@ -97,6 +115,13 @@ python3 -m app.main
 ```
 
 The web UI is then available at [http://127.0.0.1:8080](http://127.0.0.1:8080).
+
+Useful environment overrides for local profiling or custom installs:
+
+- `PIDECK_HTTP_PORT` - change the FastAPI port
+- `PIDECK_HYPERDECK_PORT` - change the HyperDeck TCP port
+- `PIDECK_CONFIG` - point to a custom `config.json`
+- `PIDECK_MEDIA_ENRICHMENT_WORKERS` - tune concurrent background media enrichment workers
 
 If you already cloned the repository and want the guided installer instead of doing setup manually:
 

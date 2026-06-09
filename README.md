@@ -152,15 +152,26 @@ It is already usable for testing and real-world validation, but it should still 
 
 ## Roadmap
 
+### Recently Delivered
+
+- playback reliability improvements for cue, play resume, loop propagation, and warm `mpv` stop behavior
+- incremental WebSocket-driven UI updates with reduced full rerenders
+- event delegation, DOM node reuse, and light virtualization for large media and playlist views
+- cache-friendly thumbnail versioning and lighter thumbnail delivery
+- background media ingestion with fast placeholder insertion and deferred metadata / thumbnail enrichment
+- live media processing states and ETA feedback during imports
+- stronger backend resilience for slow WebSocket clients
+- targeted automated tests for state handling, cue / loop behavior, and media ingestion
+
 ### Near Term
 
 - improve ATEM real-world validation and protocol coverage
-- refine playback reliability and error handling
 - polish playlist workflow and operator UX
 - improve browser preview and media browsing
-- add clearer health/status indicators for player, output, and storage
 - improve documentation and setup guides
 - strengthen the cross-platform installer and first-run experience
+- improve ETA accuracy across mixed clip sizes and longer import batches
+- expose clearer import queue / processing status for operators and diagnostics
 
 ### Mid Term
 

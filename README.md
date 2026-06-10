@@ -124,7 +124,14 @@ Web UI at [http://127.0.0.1:8080](http://127.0.0.1:8080). Configuration lives in
 2. In ATEM Software Control → HyperDeck tab, add the target shown in DeckPilot's web UI.
 3. Enable Auto Roll if you want the switcher to roll clips on cut.
 
-A scripted + interactive protocol test client ships in `scripts/hyperdeck_test_client.py`.
+A protocol test bench ships in `scripts/hyperdeck_test_client.py` — it works against DeckPilot **and real HyperDecks**, so you can compare behaviors side by side:
+
+```bash
+python3 scripts/hyperdeck_test_client.py <deck-ip> --check          # spec-conformance suite (read-only)
+python3 scripts/hyperdeck_test_client.py <deck-ip> --check --allow-transport  # + cue/play/stop checks
+python3 scripts/hyperdeck_test_client.py <deck-ip> --monitor        # stream async notifications live
+python3 scripts/hyperdeck_test_client.py <deck-ip>                  # interactive REPL with operator aliases
+```
 
 ## Control surface
 

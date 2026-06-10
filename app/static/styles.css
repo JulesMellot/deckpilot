@@ -614,7 +614,8 @@ header { grid-area: header; }
   background: var(--bg-panel-light);
 }
 
-.pad-btn:disabled {
+.pad-btn:disabled,
+.pad-btn.is-empty {
   opacity: 0.35;
   cursor: default;
 }
@@ -632,6 +633,36 @@ header { grid-area: header; }
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.pad-btn {
+  position: relative;
+}
+
+.pad-btn.pinned {
+  border-left: 3px solid var(--color-accent);
+}
+
+.pad-btn-unpin {
+  position: absolute;
+  top: 0.15rem;
+  right: 0.3rem;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  display: none;
+}
+
+.pad-btn.pinned:hover .pad-btn-unpin {
+  display: block;
+}
+
+.pad-btn-unpin:hover {
+  color: var(--color-live);
+}
+
+.pad-btn.drop-target {
+  border-color: var(--color-ready);
+  background: rgba(0, 211, 98, 0.12);
 }
 
 .pad-btn.active {
@@ -730,6 +761,90 @@ header { grid-area: header; }
   display: flex;
   gap: 0.5rem;
   flex-wrap: wrap;
+}
+
+.update-status-line {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: var(--text-main);
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border-dim);
+  border-left: 3px solid var(--color-accent);
+  background: var(--bg-element);
+}
+
+.update-status-line.is-available { border-left-color: var(--color-ready); }
+.update-status-line.is-busy { border-left-color: #ff9f1a; }
+.update-status-line.is-error { border-left-color: var(--color-live); }
+
+.update-changelog {
+  border: 1px solid var(--border-dim);
+  background: var(--bg-app);
+  padding: 0.5rem 0.7rem;
+  max-height: 10rem;
+  overflow-y: auto;
+}
+
+.update-changelog-title {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.1em;
+  color: var(--color-ready);
+  margin-bottom: 0.35rem;
+}
+
+.update-changelog ul {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.update-changelog li {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.update-changelog li .commit-hash {
+  color: var(--color-accent);
+  margin-right: 0.4rem;
+}
+
+.config-editor {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.5rem 0.9rem;
+}
+
+.config-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.config-field label {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  text-transform: uppercase;
+}
+
+.config-field input {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+
+.config-field.is-dirty input {
+  border-color: #ff9f1a;
+}
+
+.config-field.span-2 {
+  grid-column: span 2;
 }
 
 .transport-mark-chip {

@@ -35,6 +35,7 @@ class AppConfig:
     media_enrichment_workers: int = field(default_factory=lambda: max(1, min(2, os.cpu_count() or 2)))
     default_image_duration_seconds: float = 10.0
     watch_folder_seconds: float = 5.0
+    config_path: str = ""
 
     def ensure_directories(self) -> None:
         Path(self.clips_dir).mkdir(parents=True, exist_ok=True)
@@ -80,6 +81,8 @@ def load_config() -> AppConfig:
         data_dir = raw.get("data_dir") or defaults.data_dir
         raw["mpv_log_path"] = str(Path(data_dir) / "mpv.log")
 
+    raw.pop("config_path", None)
     config = AppConfig(**raw)
+    config.config_path = config_path
     config.ensure_directories()
     return config

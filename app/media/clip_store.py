@@ -127,6 +127,14 @@ class ClipStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS pad_assignments (
+                    pad INTEGER PRIMARY KEY CHECK (pad BETWEEN 1 AND 9),
+                    filename TEXT NOT NULL
+                )
+                """
+            )
             columns = [row[1] for row in conn.execute("PRAGMA table_info(clips)").fetchall()]
             if 'folder' not in columns:
                 conn.execute("ALTER TABLE clips ADD COLUMN folder TEXT NOT NULL DEFAULT 'Library'")
@@ -885,6 +893,32 @@ class ClipStore:
             conn.commit()
         self._invalidate_clips_cache()
         return applied
+
+    async def get_pad_assignments(self) -> dict[int, str]:
+        return await asyncio.to_thread(self._get_pad_assignments_sync)
+
+    def _get_pad_assignments_sync(self) -> dict[int, str]:
+        with self._connect() as conn:
+            rows = conn.execute('SELECT pad, filename FROM pad_assignments').fetchall()
+        return {int(row['pad']): row['filename'] for row in rows}
+
+    async def set_pad_assignment(self, pad: int, filename: str | None) -> bool:
+        if pad < 1 or pad > 9:
+            return False
+        await asyncio.to_thread(self._set_pad_assignment_sync, pad, filename)
+        return True
+
+    def _set_pad_assignment_sync(self, pad: int, filename: str | None) -> None:
+        with self._connect() as conn:
+            if filename is None:
+                conn.execute('DELETE FROM pad_assignments WHERE pad = ?', (pad,))
+            else:
+                conn.execute(
+                    'INSERT INTO pad_assignments (pad, filename) VALUES (?, ?) '
+                    'ON CONFLICT(pad) DO UPDATE SET filename = excluded.filename',
+                    (pad, filename),
+                )
+            conn.commit()
 
     async def delete_clip(self, deck_id: int) -> None:
         await asyncio.to_thread(self._delete_clip_sync, deck_id)

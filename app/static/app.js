@@ -166,6 +166,12 @@ const DOM = {
   settingsModal: document.getElementById('settings-modal'),
   btnSettingsClose: document.getElementById('btn-settings-close'),
   updateMeta: document.getElementById('update-meta'),
+  updateStatusLine: document.getElementById('update-status-line'),
+  updateChangelog: document.getElementById('update-changelog'),
+  updateChangelogList: document.getElementById('update-changelog-list'),
+  configEditor: document.getElementById('config-editor'),
+  btnSaveConfig: document.getElementById('btn-save-config'),
+  btnRestartApp: document.getElementById('btn-restart-app'),
   btnRunUpdate: document.getElementById('btn-run-update'),
   btnExportLibrary: document.getElementById('btn-export-library'),
   btnImportLibrary: document.getElementById('btn-import-library'),
@@ -658,7 +664,7 @@ async function runShortcut(action, errorTitle) {
 }
 
 function updateClock() {
-  DOM.systemClock.textContent = new Date().toLocaleTimeString('fr-FR', { hour12: false });
+  DOM.systemClock.textContent = new Date().toLocaleTimeString('en-GB', { hour12: false });
 }
 setInterval(updateClock, 1000);
 updateClock();
@@ -732,16 +738,19 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+function padEntries() {
+  return state.snapshot?.pads || [];
+}
+
 function firePadClip(padNumber, cueOnly) {
-  const clips = state.snapshot?.clips || [];
-  const clip = clips[padNumber - 1];
-  if (!clip) return Promise.resolve();
-  state.selectedClipId = clip.deck_id;
+  const entry = padEntries().find((pad) => pad.pad === padNumber);
+  if (!entry || !entry.clip_id) return Promise.resolve();
+  state.selectedClipId = entry.clip_id;
   syncMediaGridVisualState();
   if (cueOnly) {
-    return cueClip(clip.deck_id);
+    return cueClip(entry.clip_id);
   }
-  return api(`/api/clips/${clip.deck_id}/play`, { method: 'POST' });
+  return api(`/api/clips/${entry.clip_id}/play`, { method: 'POST' });
 }
 
 function setMediaView(view) {
@@ -1002,6 +1011,29 @@ function closeSettingsModal() {
 
 function openSettingsModal() {
   DOM.settingsModal.hidden = false;
+  void loadConfigEditor().catch((error) => console.error(error));
+}
+
+async function loadConfigEditor() {
+  const payload = await api('/api/system/config');
+  state.configValues = payload.config || {};
+  const fragment = document.createDocumentFragment();
+  for (const [key, value] of Object.entries(state.configValues)) {
+    const field = document.createElement('div');
+    const isWide = Array.isArray(value) || key === 'app_name';
+    field.className = `config-field${isWide ? ' span-2' : ''}`;
+    const label = document.createElement('label');
+    label.textContent = key.replaceAll('_', ' ');
+    const input = document.createElement('input');
+    input.className = 'select-box';
+    input.type = 'text';
+    input.dataset.key = key;
+    input.value = Array.isArray(value) ? value.join(', ') : String(value);
+    input.addEventListener('input', () => field.classList.add('is-dirty'));
+    field.append(label, input);
+    fragment.appendChild(field);
+  }
+  DOM.configEditor.replaceChildren(fragment);
 }
 
 function renderConnectionStatus(connections) {
@@ -1180,7 +1212,7 @@ function renderVuMeter(transport, currentClip) {
 }
 
 function renderPads(transport = state.snapshot?.transport) {
-  const clips = state.snapshot?.clips || [];
+  const entries = padEntries();
   if (!DOM.padGrid.childElementCount) {
     const fragment = document.createDocumentFragment();
     for (let pad = 1; pad <= 9; pad += 1) {
@@ -1188,7 +1220,7 @@ function renderPads(transport = state.snapshot?.transport) {
       button.type = 'button';
       button.className = 'pad-btn';
       button.dataset.pad = String(pad);
-      button.innerHTML = '<span class="pad-btn-key"></span><span class="pad-btn-name"></span>';
+      button.innerHTML = '<span class="pad-btn-key"></span><span class="pad-btn-name"></span><span class="pad-btn-unpin" data-role="unpin" title="Unpin (back to automatic)">×</span>';
       fragment.appendChild(button);
     }
     DOM.padGrid.appendChild(fragment);
@@ -1197,14 +1229,18 @@ function renderPads(transport = state.snapshot?.transport) {
   const isPlaying = transport?.status === 'play';
   for (const button of DOM.padGrid.children) {
     const pad = Number(button.dataset.pad);
-    const clip = clips[pad - 1] || null;
-    const keyNode = button.firstElementChild;
-    const nameNode = button.lastElementChild;
+    const entry = entries.find((item) => item.pad === pad) || { clip_id: null, name: null, pinned: false };
+    const keyNode = button.querySelector('.pad-btn-key');
+    const nameNode = button.querySelector('.pad-btn-name');
     keyNode.textContent = String(pad);
-    nameNode.textContent = clip ? clip.name : '--';
-    button.disabled = !clip;
-    button.title = clip ? `${clip.name} — click to fire, Shift+click to cue` : 'Empty pad';
-    const isActive = Boolean(clip && clip.deck_id === activeClipId);
+    nameNode.textContent = entry.name || '--';
+    // Not `disabled`: empty pads must still receive drag & drop events.
+    button.classList.toggle('is-empty', !entry.clip_id);
+    button.title = entry.clip_id
+      ? `${entry.name} — click to fire, Shift+click to cue, drop a clip to pin`
+      : 'Empty pad — drop a clip from the media pool to pin it';
+    button.classList.toggle('pinned', Boolean(entry.pinned));
+    const isActive = Boolean(entry.clip_id && entry.clip_id === activeClipId);
     button.classList.toggle('active', isActive && isPlaying);
     button.classList.toggle('cued', isActive && !isPlaying);
   }
@@ -1351,45 +1387,74 @@ function transportAffectsCollections(previousTransport, nextTransport) {
 function renderUpdateStatus(update) {
   state.updateStatus = update || null;
   if (!update) {
-    DOM.updateMeta.textContent = 'Update status unavailable.';
+    DOM.updateStatusLine.textContent = 'Update status unavailable.';
+    DOM.updateStatusLine.className = 'update-status-line is-error';
+    DOM.updateChangelog.hidden = true;
+    DOM.updateMeta.textContent = '';
     DOM.btnRunUpdate.disabled = true;
     DOM.btnRunUpdate.textContent = 'UPDATE NOW';
     DOM.btnRunUpdate.classList.remove('active');
     return;
   }
 
+  const busy = ['running', 'restarting', 'rebooting'].includes(update.phase);
+  let statusClass = 'update-status-line';
+  let statusText;
+  if (busy) {
+    statusClass += ' is-busy';
+    statusText = `Updating… ${update.message || ''}`;
+  } else if (update.error) {
+    statusClass += ' is-error';
+    statusText = `Update failed: ${update.error}`;
+  } else if (update.update_available) {
+    statusClass += ' is-available';
+    statusText = `Update available — ${update.current_commit || '?'} → ${update.remote_commit || '?'}`;
+  } else if (update.update_available === false) {
+    statusText = `Up to date — ${update.current_commit || '?'} on ${update.branch || '?'}`;
+  } else {
+    statusText = update.message || 'Update status unknown.';
+  }
+  DOM.updateStatusLine.className = statusClass;
+  DOM.updateStatusLine.textContent = statusText;
+
+  const changelog = update.changelog || [];
+  DOM.updateChangelog.hidden = !changelog.length;
+  if (changelog.length) {
+    const fragment = document.createDocumentFragment();
+    changelog.forEach((entry) => {
+      const item = document.createElement('li');
+      const space = entry.indexOf(' ');
+      const hash = document.createElement('span');
+      hash.className = 'commit-hash';
+      hash.textContent = space > 0 ? entry.slice(0, space) : '';
+      item.appendChild(hash);
+      item.appendChild(document.createTextNode(space > 0 ? entry.slice(space + 1) : entry));
+      fragment.appendChild(item);
+    });
+    DOM.updateChangelogList.replaceChildren(fragment);
+  }
+
   const lines = [
-    `Platform: ${(update.platform || 'unknown').toUpperCase()} | Mode: ${(update.install_mode || 'manual').toUpperCase()}`,
-    `Branch: ${update.branch || 'unknown'} | Local: ${update.current_commit || 'n/a'} | Remote: ${update.remote_commit || 'n/a'}`,
-    `Status: ${(update.phase || 'idle').toUpperCase()} | ${update.message || 'Ready'}`,
+    `Platform: ${(update.platform || 'unknown').toUpperCase()} | Install: ${(update.install_mode || 'manual').toUpperCase()} | Branch: ${update.branch || 'unknown'}`,
   ];
   if (update.restart_target === 'raspberry_pi') {
-    lines.push('Update action: RASPBERRY PI REBOOT');
+    lines.push('This update will reboot the Raspberry Pi.');
   } else if (update.restart_target === 'deckpilot') {
-    lines.push('Update action: DECKPILOT RESTART ONLY');
-  } else {
-    lines.push('Update action: AUTOMATIC DECISION DURING UPDATE');
-  }
-  if (update.restart_notice) {
-    lines.push(`Restart policy: ${update.restart_notice}`);
+    lines.push('This update only restarts DeckPilot.');
   }
   if (update.restart_reason) {
-    lines.push(`Reason: ${update.restart_reason}`);
+    lines.push(`Why: ${update.restart_reason}`);
   }
   if (update.finished_at) {
-    lines.push(`Last run: ${formatDateTime(update.finished_at)}`);
-  }
-  if (update.error) {
-    lines.push(`Error: ${update.error}`);
+    lines.push(`Last update: ${formatDateTime(update.finished_at)}`);
   }
   if (!update.can_update && update.reason) {
-    lines.push(`Info: ${update.reason}`);
+    lines.push(`Note: ${update.reason}`);
   }
   DOM.updateMeta.textContent = lines.join('\n');
 
-  const busy = ['running', 'restarting', 'rebooting'].includes(update.phase);
   DOM.btnRunUpdate.disabled = busy || !update.can_update;
-  DOM.btnRunUpdate.textContent = busy ? 'UPDATING...' : 'UPDATE NOW';
+  DOM.btnRunUpdate.textContent = busy ? 'UPDATING…' : 'UPDATE NOW';
   DOM.btnRunUpdate.classList.toggle('active', Boolean(update.update_available) && !busy && update.can_update);
 }
 
@@ -1739,8 +1804,8 @@ function renderPlaylist(playlistPayload, activeClipId) {
 function renderPreview() {
   const clip = getSelectedClip();
   if (!clip) {
-    DOM.previewTitle.textContent = 'Aucun clip selectionne';
-    DOM.previewSubtitle.textContent = 'Selectionne un clip pour le previsualiser dans le navigateur.';
+    DOM.previewTitle.textContent = 'No clip selected';
+    DOM.previewSubtitle.textContent = 'Select a clip to preview it in the browser.';
     DOM.previewStillDuration.hidden = true;
     DOM.previewTagsValue.textContent = '--';
     DOM.previewImage.hidden = true;
@@ -1897,7 +1962,7 @@ async function handleClipAction(clip, action) {
   } else if (action === 'rename') {
     const name = await requestText({
       title: 'Rename Clip',
-      message: 'Nouveau nom du clip :',
+      message: 'New clip name:',
       inputValue: clip.name,
       confirmLabel: 'SAVE'
     });
@@ -1906,7 +1971,7 @@ async function handleClipAction(clip, action) {
     if (!await ensureLiveActionAllowed('Clip deletion')) return;
     const confirmed = await requestConfirm({
       title: 'Delete Clip',
-      message: `Supprimer définitivement ${clip.name} ?`,
+      message: `Permanently delete ${clip.name}?`,
       confirmLabel: 'DELETE'
     });
     if (confirmed) {
@@ -1960,7 +2025,7 @@ async function uploadFiles(fileList) {
   } catch (error) {
     shouldRefresh = true;
     state.uploadProcessingActive = false;
-    await showNotice('Upload Error', error.message || "Échec de l'upload.");
+    await showNotice('Upload Error', error.message || 'Upload failed.');
     hideUploadOverlaySoon(300);
   } finally {
     if (shouldRefresh) {
@@ -1999,9 +2064,35 @@ bindAsync(DOM.btnMarkClear, 'click', async () => {
 }, 'Marks Error');
 bindAsync(DOM.padGrid, 'click', async (event) => {
   const button = event.target.closest('.pad-btn');
-  if (!button || button.disabled) return;
+  if (!button) return;
+  if (event.target.closest('.pad-btn-unpin')) {
+    event.stopPropagation();
+    await api(`/api/pads/${button.dataset.pad}`, { method: 'POST', body: JSON.stringify({ clip_id: null }) });
+    return;
+  }
+  if (button.classList.contains('is-empty')) return;
   await firePadClip(Number(button.dataset.pad), event.shiftKey);
 }, 'Playback Error');
+DOM.padGrid.addEventListener('dragover', (event) => {
+  const button = event.target.closest('.pad-btn');
+  if (!button || !state.dragClipId) return;
+  event.preventDefault();
+  button.classList.add('drop-target');
+});
+DOM.padGrid.addEventListener('dragleave', (event) => {
+  const button = event.target.closest('.pad-btn');
+  if (!button || button.contains(event.relatedTarget)) return;
+  button.classList.remove('drop-target');
+});
+bindAsync(DOM.padGrid, 'drop', async (event) => {
+  const button = event.target.closest('.pad-btn');
+  if (!button) return;
+  event.preventDefault();
+  button.classList.remove('drop-target');
+  const clipId = state.dragClipId;
+  if (!clipId) return;
+  await api(`/api/pads/${button.dataset.pad}`, { method: 'POST', body: JSON.stringify({ clip_id: clipId }) });
+}, 'Pads Error');
 bindAsync(DOM.btnPrev, 'click', async () => playAdjacentClip(-1), 'Playback Error');
 bindAsync(DOM.btnNext, 'click', async () => playAdjacentClip(1), 'Playback Error');
 bindAsync(DOM.btnBlack, 'click', async () => {
@@ -2026,19 +2117,46 @@ bindAsync(DOM.btnArmLive, 'click', async () => {
   });
   applySafetyState(response.safety);
 }, 'Safety Error');
+bindAsync(DOM.btnSaveConfig, 'click', async () => {
+  const updates = {};
+  for (const input of DOM.configEditor.querySelectorAll('input')) {
+    const key = input.dataset.key;
+    const original = state.configValues?.[key];
+    const originalText = Array.isArray(original) ? original.join(', ') : String(original);
+    if (input.value.trim() === originalText.trim()) continue;
+    updates[key] = input.value.trim();
+  }
+  if (!Object.keys(updates).length) {
+    await showNotice('Configuration', 'No changes to save.');
+    return;
+  }
+  const result = await api('/api/system/config', { method: 'POST', body: JSON.stringify({ updates }) });
+  await showNotice('Configuration Saved', `Updated: ${result.updated.join(', ')}.\nChanges are stored in config.json and apply after a restart — use RESTART DECKPILOT when ready.`);
+  await loadConfigEditor();
+}, 'Configuration Error');
+bindAsync(DOM.btnRestartApp, 'click', async () => {
+  const confirmed = await requestConfirm({
+    title: 'Restart DeckPilot',
+    message: 'Restart DeckPilot now? Playback stops and the deck is back in a few seconds (the service restarts automatically).',
+    confirmLabel: 'RESTART',
+  });
+  if (!confirmed) return;
+  await api('/api/system/restart', { method: 'POST' });
+  await showNotice('Restarting', 'DeckPilot is restarting — the interface will reconnect automatically.');
+}, 'Restart Error');
 bindAsync(DOM.btnRunUpdate, 'click', async () => {
   const updateStatus = state.updateStatus;
   let updateMessage = 'DeckPilot will pull the latest version and restart automatically if needed. Continue?';
   if (updateStatus?.restart_target === 'raspberry_pi') {
     if (updateStatus.automatic_reboot_available) {
-      updateMessage = 'Cette mise a jour redemarrera automatiquement le Raspberry Pi car elle modifie des composants appliance. Continuer ?';
+      updateMessage = 'This update changes appliance components and will reboot the Raspberry Pi automatically. Continue?';
     } else {
-      updateMessage = 'Cette mise a jour necessitera un redemarrage du Raspberry Pi. DeckPilot se mettra a jour maintenant et indiquera ensuite qu un reboot manuel reste requis. Continuer ?';
+      updateMessage = 'This update requires a Raspberry Pi reboot. DeckPilot will update now and then ask for a manual reboot. Continue?';
     }
   } else if (updateStatus?.restart_target === 'deckpilot') {
-    updateMessage = 'Cette mise a jour redemarrera seulement DeckPilot. Un reboot du Raspberry Pi nest pas obligatoire. Continuer ?';
+    updateMessage = 'This update only restarts DeckPilot — no Raspberry Pi reboot needed. Continue?';
   } else if (updateStatus?.restart_notice) {
-    updateMessage = `${updateStatus.restart_notice} Continuer ?`;
+    updateMessage = `${updateStatus.restart_notice} Continue?`;
   }
   const confirmed = await requestConfirm({
     title: 'Update DeckPilot',
@@ -2252,7 +2370,7 @@ DOM.btnToggleMediaView.addEventListener('click', () => {
 bindAsync(DOM.btnNewFolder, 'click', async () => {
   const name = await requestText({
     title: 'New Folder',
-    message: 'Nom du dossier media :',
+    message: 'Media folder name:',
     confirmLabel: 'CREATE'
   });
   if (!name) return;
@@ -2265,13 +2383,13 @@ bindAsync(DOM.btnNewFolder, 'click', async () => {
 bindAsync(DOM.btnMoveFolder, 'click', async () => {
   const clip = getSelectedClip();
   if (!clip) {
-    await showNotice('Move Clip', 'Selectionne un clip avant de changer son dossier.');
+    await showNotice('Move Clip', 'Select a clip before moving it to another folder.');
     return;
   }
   const folderOptions = state.folders.filter((folder) => folder !== 'All');
   const targetFolder = await requestSelect({
     title: 'Move Clip',
-    message: `Deplacer "${clip.name}" vers :`,
+    message: `Move "${clip.name}" to:`,
     selectOptions: folderOptions,
     selectValue: clip.folder,
     confirmLabel: 'MOVE'
@@ -2312,7 +2430,7 @@ bindAsync(DOM.btnPreviewDuration, 'click', async () => {
   if (!clip || clip.media_kind !== 'image') return;
   const seconds = Number(DOM.previewDurationInput.value || 0);
   if (!(seconds > 0)) {
-    await showNotice('Still Duration', 'La durée doit être un nombre de secondes positif.');
+    await showNotice('Still Duration', 'Duration must be a positive number of seconds.');
     return;
   }
   await api(`/api/clips/${clip.deck_id}/duration`, { method: 'PATCH', body: JSON.stringify({ seconds }) });
@@ -2322,7 +2440,7 @@ bindAsync(DOM.btnPreviewTags, 'click', async () => {
   if (!clip) return;
   const value = await openAppDialog({
     title: 'Edit Tags',
-    message: `Tags de "${clip.name}" (séparés par des virgules, vide pour effacer) :`,
+    message: `Tags for "${clip.name}" (comma separated, empty to clear):`,
     inputValue: clip.tags || '',
     showInput: true,
     confirmLabel: 'SAVE',
@@ -2390,16 +2508,16 @@ bindAsync(DOM.importFileInput, 'change', async () => {
   try {
     payload = JSON.parse(text);
   } catch (error) {
-    throw new Error('Fichier JSON invalide.');
+    throw new Error('Invalid JSON file.');
   }
   const confirmed = await requestConfirm({
     title: 'Import Library',
-    message: 'Appliquer les noms, dossiers, marks, tags et playlists de ce fichier ? Les réglages actuels des clips correspondants seront remplacés.',
+    message: 'Apply the names, folders, marks, tags, and playlists from this file? Current settings of matching clips will be replaced.',
     confirmLabel: 'IMPORT',
   });
   if (!confirmed) return;
   const result = await api('/api/system/import', { method: 'POST', body: JSON.stringify(payload) });
-  await showNotice('Import Complete', `${result.clips} clip(s) et ${result.playlists} playlist(s) mis à jour.`);
+  await showNotice('Import Complete', `${result.clips} clip(s) and ${result.playlists} playlist(s) updated.`);
   await refresh();
 }, 'Import Error');
 DOM.appDialogBackdrop.addEventListener('click', (event) => {
@@ -2508,6 +2626,11 @@ function setupWebSocket() {
       normalizeSelection();
       renderPlaylists();
       renderPlaybackCollections();
+      return;
+    }
+    if (message.type === 'pads') {
+      state.snapshot.pads = message.payload.pads || [];
+      renderPads();
       return;
     }
     if (message.type === 'outputs') {

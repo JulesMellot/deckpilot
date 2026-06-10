@@ -67,6 +67,19 @@ class FakeClip:
 class FakeClipStore:
     def __init__(self, clips: list[FakeClip]) -> None:
         self.clips = {clip.deck_id: clip for clip in clips}
+        self.pad_assignments: dict[int, str] = {}
+
+    async def get_pad_assignments(self) -> dict[int, str]:
+        return dict(self.pad_assignments)
+
+    async def set_pad_assignment(self, pad: int, filename: str | None) -> bool:
+        if pad < 1 or pad > 9:
+            return False
+        if filename is None:
+            self.pad_assignments.pop(pad, None)
+        else:
+            self.pad_assignments[pad] = filename
+        return True
 
     async def get_clip(self, clip_id: int) -> FakeClip | None:
         return self.clips.get(clip_id)
@@ -433,6 +446,53 @@ class DeckControllerProtocolTimelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(ok)
         self.assertEqual(self.playlist_store.cleared, 1)
         self.assertEqual(self.playlist_store.items, [])
+
+
+class DeckControllerPadsTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        clips = [
+            FakeClip(deck_id=1, name='Intro', filepath='/tmp/intro.mp4'),
+            FakeClip(deck_id=2, name='Main', filepath='/tmp/main.mp4'),
+        ]
+        self.state = AppState(AppConfig())
+        self.clip_store = FakeClipStore(clips)
+        self.controller = DeckController(
+            config=AppConfig(),
+            state=self.state,
+            clip_store=self.clip_store,
+            playlist_store=FakePlaylistStore(),
+            output_manager=FakeOutputManager(),
+            network_info=FakeNetworkInfo(),
+            player=FakePlayer(),
+        )
+
+    async def test_unpinned_pads_fall_back_to_library_order(self) -> None:
+        pads = await self.controller.pads_snapshot()
+
+        self.assertEqual(pads[0]['clip_id'], 1)
+        self.assertEqual(pads[1]['clip_id'], 2)
+        self.assertIsNone(pads[2]['clip_id'])
+        self.assertFalse(pads[0]['pinned'])
+
+    async def test_pinned_pad_overrides_fallback(self) -> None:
+        ok = await self.controller.set_pad(1, 2)
+
+        self.assertTrue(ok)
+        pads = await self.controller.pads_snapshot()
+        self.assertEqual(pads[0]['clip_id'], 2)
+        self.assertTrue(pads[0]['pinned'])
+
+    async def test_unpin_restores_fallback(self) -> None:
+        await self.controller.set_pad(1, 2)
+
+        await self.controller.set_pad(1, None)
+
+        pads = await self.controller.pads_snapshot()
+        self.assertEqual(pads[0]['clip_id'], 1)
+        self.assertFalse(pads[0]['pinned'])
+
+    async def test_set_pad_rejects_unknown_clip(self) -> None:
+        self.assertFalse(await self.controller.set_pad(1, 99))
 
 
 class DeckControllerRundownTests(unittest.IsolatedAsyncioTestCase):

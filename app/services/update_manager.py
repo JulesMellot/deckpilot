@@ -23,6 +23,10 @@ class UpdateManager:
         self.repo_root = Path(__file__).resolve().parents[2]
         self.status_path = Path(config.data_dir) / 'update_status.json'
         self._lock = asyncio.Lock()
+        # Changelog cache: (local_commit, remote_commit) -> list of entries,
+        # so the git fetch only happens once per new remote commit.
+        self._changelog_key: tuple[str | None, str | None] | None = None
+        self._changelog_entries: list[str] = []
 
     async def get_status(self) -> dict[str, Any]:
         return await asyncio.to_thread(self._get_status_sync)
@@ -153,9 +157,9 @@ class UpdateManager:
                 phase = 'success'
                 saved['phase'] = 'success'
                 if saved.get('reboot_required') and saved.get('automatic_reboot_available'):
-                    saved['message'] = 'DeckPilot updated successfully apres redemarrage du Raspberry Pi.'
+                    saved['message'] = 'DeckPilot updated successfully after the Raspberry Pi reboot.'
                 elif saved.get('reboot_required'):
-                    saved['message'] = 'DeckPilot updated successfully. Un redemarrage du Raspberry Pi reste requis.'
+                    saved['message'] = 'DeckPilot updated successfully. A Raspberry Pi reboot is still required.'
                 else:
                     saved['message'] = 'DeckPilot updated successfully.'
                 saved['finished_at'] = saved.get('finished_at') or time.time()
@@ -201,9 +205,32 @@ class UpdateManager:
             'restart_reason': saved.get('restart_reason', update_plan['restart_reason']),
             'reboot_trigger_files': saved.get('reboot_trigger_files', update_plan['reboot_trigger_files']),
             'changed_file_count': update_plan['changed_file_count'],
+            'changelog': self._changelog_sync(branch, current_commit_full, remote_commit_full, update_available),
             'can_update': reason is None,
             'reason': reason,
         }
+
+    def _changelog_sync(
+        self,
+        branch: str | None,
+        current_commit_full: str | None,
+        remote_commit_full: str | None,
+        update_available: bool | None,
+    ) -> list[str]:
+        if not update_available or not branch or not current_commit_full or not remote_commit_full:
+            return []
+        cache_key = (current_commit_full, remote_commit_full)
+        if self._changelog_key == cache_key:
+            return self._changelog_entries
+        # The remote hash comes from ls-remote; fetch once to get the commits.
+        self._git_output(['fetch', '--quiet', 'origin', branch], timeout=25)
+        log = self._git_output(
+            ['log', '--pretty=format:%h %s', '--no-merges', '-n', '30', f'HEAD..origin/{branch}'],
+            timeout=10,
+        )
+        self._changelog_key = cache_key
+        self._changelog_entries = log.splitlines() if log else []
+        return self._changelog_entries
 
     def _default_message(self, update_available: bool | None) -> str:
         if update_available is True:

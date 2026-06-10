@@ -419,8 +419,22 @@
         </div>
         <div class="form-row settings-update-row">
           <label>SYSTEM UPDATE</label>
-          <div class="settings-update-meta" id="update-meta">Checking update status...</div>
+          <div class="update-status-line" id="update-status-line">Checking update status...</div>
+          <div class="update-changelog" id="update-changelog" hidden>
+            <div class="update-changelog-title">WHAT'S NEW</div>
+            <ul id="update-changelog-list"></ul>
+          </div>
+          <div class="settings-update-meta" id="update-meta"></div>
           <button id="btn-run-update" class="action-btn">UPDATE NOW</button>
+        </div>
+        <div class="form-row settings-update-row">
+          <label>CONFIGURATION</label>
+          <div class="settings-update-meta">Saved to config.json — changes apply after a restart.</div>
+          <div class="config-editor" id="config-editor"></div>
+          <div class="settings-maintenance-actions">
+            <button id="btn-save-config" class="action-btn" type="button">SAVE CONFIG</button>
+            <button id="btn-restart-app" class="action-btn" type="button">RESTART DECKPILOT</button>
+          </div>
         </div>
         <div class="form-row settings-update-row">
           <label>KEYBOARD SHORTCUTS</label>

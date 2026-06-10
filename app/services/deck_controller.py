@@ -134,6 +134,7 @@ class DeckController:
         await self.state.publish('folders', {'folders': folders})
         await self.state.publish('playlists', {'playlists': playlists})
         await self.state.publish('playlist', await self.playlist_store.get_active_playlist())
+        await self.state.publish('pads', {'pads': await self.pads_snapshot()})
         await self.state.publish('slot', await self.slot_snapshot())
         await self._publish_health()
 
@@ -660,6 +661,42 @@ class DeckController:
     async def playlist_snapshot(self) -> Dict[str, Any]:
         return await self.playlist_store.get_active_playlist()
 
+    async def pads_snapshot(self) -> list[Dict[str, Any]]:
+        """Nine fire pads: pinned assignments (stable, by filename) with an
+        automatic fallback to the Nth library clip for unpinned pads."""
+        assignments = await self.clip_store.get_pad_assignments()
+        clips = await self.clip_store.list_clips()
+        by_filename = {clip.filename: clip for clip in clips}
+        pads: list[Dict[str, Any]] = []
+        for pad in range(1, 10):
+            clip = None
+            pinned = False
+            filename = assignments.get(pad)
+            if filename and filename in by_filename:
+                clip = by_filename[filename]
+                pinned = True
+            elif pad <= len(clips):
+                clip = clips[pad - 1]
+            pads.append({
+                'pad': pad,
+                'clip_id': clip.deck_id if clip else None,
+                'name': clip.name if clip else None,
+                'pinned': pinned,
+            })
+        return pads
+
+    async def set_pad(self, pad: int, clip_id: int | None) -> bool:
+        if clip_id is None:
+            changed = await self.clip_store.set_pad_assignment(pad, None)
+        else:
+            clip = await self.clip_store.get_clip(clip_id)
+            if not clip:
+                return False
+            changed = await self.clip_store.set_pad_assignment(pad, clip.filename)
+        if changed:
+            await self.state.publish('pads', {'pads': await self.pads_snapshot()})
+        return changed
+
     async def set_volume(self, volume: int) -> None:
         self._volume = max(0, min(volume, 100))
         if await self.player.is_available() and not await self.player.set_volume(self._volume):
@@ -767,6 +804,7 @@ class DeckController:
             'outputs': await self.list_outputs(),
             'display': await self.display_snapshot(),
             'playlist': await self.playlist_snapshot(),
+            'pads': await self.pads_snapshot(),
             'network': await self.network_info.snapshot(),
             'health': await self.health_snapshot(),
             'safety': self.state.safety_snapshot(),

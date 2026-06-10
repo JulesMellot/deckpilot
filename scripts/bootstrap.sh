@@ -389,8 +389,10 @@ install_systemd_service() {
   $SUDO tee "$service_path" >/dev/null <<EOF
 [Unit]
 Description=DeckPilot HyperDeck Emulator
-After=network-online.target
-Wants=network-online.target
+# network.target (not network-online.target): waiting for *-wait-online can
+# stall boot by 60-120s on a Pi with slow DHCP; DeckPilot binds 0.0.0.0 and
+# does not need the network to be fully up.
+After=network.target
 
 [Service]
 Type=simple
@@ -429,8 +431,7 @@ install_boot_info_service() {
   $SUDO tee "$service_path" >/dev/null <<EOF
 [Unit]
 Description=DeckPilot HDMI Boot Info
-After=network-online.target
-Wants=network-online.target
+After=network.target
 Conflicts=getty@tty1.service display-manager.service
 Before=getty@tty1.service display-manager.service
 

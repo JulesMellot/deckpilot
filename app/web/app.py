@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import signal
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -65,6 +66,32 @@ class EndBehaviorRequest(BaseModel):
 
 class PlaylistReorderRequest(BaseModel):
     positions: list[int]
+
+
+class PadAssignRequest(BaseModel):
+    clip_id: int | None = None
+
+
+class ConfigUpdateRequest(BaseModel):
+    updates: dict[str, Any]
+
+
+# Settings exposed in the web UI; everything else stays file-only.
+EDITABLE_CONFIG_KEYS = (
+    'app_name',
+    'http_port',
+    'hyperdeck_port',
+    'default_video_format',
+    'default_framerate',
+    'ws_tick_seconds',
+    'watch_folder_seconds',
+    'default_image_duration_seconds',
+    'media_enrichment_workers',
+    'mpv_binary',
+    'ffmpeg_binary',
+    'ffprobe_binary',
+    'allowed_upload_extensions',
+)
 
 
 class MarksRequest(BaseModel):
@@ -285,6 +312,75 @@ def build_app(
             return await update_manager.trigger_update()
         except RuntimeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post('/api/pads/{pad}')
+    async def assign_pad(pad: int, payload: PadAssignRequest) -> dict[str, Any]:
+        if pad < 1 or pad > 9:
+            raise HTTPException(status_code=400, detail='Pad must be between 1 and 9')
+        ok_flag = await controller.set_pad(pad, payload.clip_id)
+        if not ok_flag:
+            raise HTTPException(status_code=404, detail='Clip not found')
+        return {'ok': True, 'pads': await controller.pads_snapshot()}
+
+    @app.get('/api/system/config')
+    async def get_config() -> dict[str, Any]:
+        values = {key: getattr(controller.config, key) for key in EDITABLE_CONFIG_KEYS}
+        return {
+            'config': values,
+            'config_path': controller.config.config_path,
+            'restart_required': True,
+        }
+
+    @app.post('/api/system/config')
+    async def save_config(payload: ConfigUpdateRequest) -> dict[str, Any]:
+        updates: dict[str, Any] = {}
+        for key, value in payload.updates.items():
+            if key not in EDITABLE_CONFIG_KEYS:
+                raise HTTPException(status_code=400, detail=f'Unknown setting: {key}')
+            current = getattr(controller.config, key)
+            try:
+                if isinstance(current, bool):
+                    coerced: Any = bool(value)
+                elif isinstance(current, int):
+                    coerced = int(value)
+                elif isinstance(current, float):
+                    coerced = float(value)
+                elif isinstance(current, list):
+                    if isinstance(value, str):
+                        coerced = [item.strip() for item in value.split(',') if item.strip()]
+                    else:
+                        coerced = [str(item).strip() for item in value if str(item).strip()]
+                else:
+                    coerced = str(value).strip()
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail=f'Invalid value for {key}')
+            updates[key] = coerced
+
+        config_path = Path(controller.config.config_path or 'config.json')
+
+        def write_config() -> None:
+            existing: dict[str, Any] = {}
+            if config_path.exists():
+                try:
+                    existing = json.loads(config_path.read_text(encoding='utf-8'))
+                except (OSError, json.JSONDecodeError):
+                    existing = {}
+            existing.update(updates)
+            config_path.write_text(json.dumps(existing, indent=2) + '\n', encoding='utf-8')
+
+        await asyncio.to_thread(write_config)
+        await state.add_log('info', 'system', f'Configuration updated ({", ".join(updates)}). Restart required.')
+        return {'ok': True, 'updated': list(updates), 'restart_required': True}
+
+    @app.post('/api/system/restart')
+    async def restart_application() -> dict[str, Any]:
+        async def shutdown_soon() -> None:
+            await asyncio.sleep(0.6)
+            signal.raise_signal(signal.SIGTERM)
+
+        await state.add_log('info', 'system', 'Restart requested from the web UI.')
+        asyncio.create_task(shutdown_soon())
+        return {'ok': True}
 
     @app.get('/api/system/export')
     async def export_library() -> JSONResponse:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import time
 
 import uvicorn
 
@@ -38,6 +39,7 @@ def create_application() -> tuple[AppConfig, object]:
 
     @app.on_event('startup')
     async def _startup() -> None:
+        startup_began = time.perf_counter()
         await clip_store.initialize()
         await clip_store.start_background_tasks(controller.schedule_media_refresh_publish)
         await playlist_store.initialize()
@@ -54,6 +56,7 @@ def create_application() -> tuple[AppConfig, object]:
         await controller.refresh_clips()
         await server.start()
         await watch_folder.start()
+        await state.add_log('info', 'system', f'DeckPilot ready in {time.perf_counter() - startup_began:.1f}s.')
 
     @app.on_event('shutdown')
     async def _shutdown() -> None:

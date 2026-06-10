@@ -306,6 +306,30 @@ class ClipCacheTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status['ready'], 0)
 
 
+class ConfigMigrationTests(unittest.TestCase):
+    def test_legacy_video_only_extension_list_is_extended(self) -> None:
+        from app.core.config import _migrate_upload_extensions
+
+        migrated = _migrate_upload_extensions(['.mp4', '.mov', '.mkv'])
+
+        self.assertIn('.png', migrated)
+        self.assertIn('.jpg', migrated)
+        self.assertIn('.mp4', migrated)
+
+    def test_custom_extension_list_is_preserved_and_normalized(self) -> None:
+        from app.core.config import _migrate_upload_extensions
+
+        migrated = _migrate_upload_extensions(['MP4', '.MOV', ' webm '])
+
+        self.assertEqual(migrated, ['.mp4', '.mov', '.webm'])
+
+    def test_missing_list_falls_back_to_defaults(self) -> None:
+        from app.core.config import _migrate_upload_extensions
+
+        self.assertIn('.png', _migrate_upload_extensions(None))
+        self.assertIn('.png', _migrate_upload_extensions([]))
+
+
 class HelperFunctionTests(unittest.TestCase):
     def test_normalize_tags_dedupes_and_lowercases(self) -> None:
         self.assertEqual(normalize_tags('A; b,a , ,B'), 'a, b')

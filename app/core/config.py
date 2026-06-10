@@ -81,8 +81,29 @@ def load_config() -> AppConfig:
         data_dir = raw.get("data_dir") or defaults.data_dir
         raw["mpv_log_path"] = str(Path(data_dir) / "mpv.log")
 
+    raw["allowed_upload_extensions"] = _migrate_upload_extensions(raw.get("allowed_upload_extensions"))
+
     raw.pop("config_path", None)
     config = AppConfig(**raw)
     config.config_path = config_path
     config.ensure_directories()
     return config
+
+
+def _migrate_upload_extensions(value: Any) -> list[str]:
+    defaults = AppConfig().allowed_upload_extensions
+    if not isinstance(value, list) or not value:
+        return defaults
+    normalized = []
+    for item in value:
+        text = str(item).strip().lower()
+        if not text:
+            continue
+        if not text.startswith("."):
+            text = f".{text}"
+        normalized.append(text)
+    # config.json files written before still support pinned the video-only
+    # list; extend them so image uploads work after an update.
+    if set(normalized) == {".mp4", ".mov", ".mkv"}:
+        return defaults
+    return normalized or defaults

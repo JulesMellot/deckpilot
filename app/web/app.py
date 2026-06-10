@@ -432,7 +432,11 @@ def build_app(
             for item in files:
                 suffix = Path(item.filename or '').suffix.lower()
                 if suffix not in controller.config.allowed_upload_extensions:
-                    raise HTTPException(status_code=400, detail=f'Unsupported file type: {suffix}')
+                    allowed = ', '.join(controller.config.allowed_upload_extensions)
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f'Unsupported file type: {suffix or "(none)"} — allowed: {allowed}',
+                    )
             await clip_store.save_upload_streams(files)
             await controller.refresh_clips()
             return {

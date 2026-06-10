@@ -5,8 +5,23 @@ from dataclasses import dataclass
 
 from app.core.config import AppConfig
 from app.core.state import AppState
-from app.hyperdeck.protocol import boolish, error, ok, parse_command, response
+from app.hyperdeck.protocol import (
+    FAIL_CLIP_NOT_FOUND,
+    FAIL_INVALID_STATE,
+    FAIL_INVALID_VALUE,
+    FAIL_REMOTE_DISABLED,
+    FAIL_SYNTAX_ERROR,
+    FAIL_TIMELINE_EMPTY,
+    boolish,
+    failure,
+    ok,
+    parse_command,
+    response,
+    timecode_to_seconds,
+)
 from app.services.deck_controller import DeckController
+
+SOFTWARE_VERSION = '1.0'
 
 
 @dataclass
@@ -15,9 +30,12 @@ class HyperDeckSession:
     writer: asyncio.StreamWriter
     host: str
     port: int
-    notify_transport: bool = True
-    notify_slot: bool = True
-    notify_clips: bool = True
+    # Per the protocol spec, asynchronous notifications are disabled until the
+    # controller enables them with the `notify` command.
+    notify_transport: bool = False
+    notify_slot: bool = False
+    notify_clips: bool = False
+    notify_remote: bool = False
     remote_enabled: bool = True
 
 
@@ -92,34 +110,33 @@ class HyperDeckServer:
         command, params = parse_command(line)
         controlled_commands = {'play', 'stop', 'goto', 'playrange set', 'playrange clear', 'clips add', 'clips clear'}
         if command in controlled_commands and (not self.state.remote_enabled or not session.remote_enabled):
-            return error('remote disabled')
+            return failure(FAIL_REMOTE_DISABLED)
         if command == 'device info':
-            clips = await self.controller.list_clips()
             return response(
                 204,
                 'device info:',
-                f'model: {self.config.protocol_model}',
                 f'protocol version: {self.config.protocol_version}',
+                f'model: {self.config.protocol_model}',
                 f'unique id: {self.config.app_name}',
-                'video inputs: 1',
-                'audio inputs: 1',
-                f'clip count: {len(clips)}',
+                'slot count: 1',
+                f'software version: {SOFTWARE_VERSION}',
             )
         if command == 'clips add':
             clip_id = int(params.get('clip id', '0') or 0)
             name = params.get('name')
             if not clip_id and not name:
-                return error('missing clip id or name')
+                return failure(FAIL_SYNTAX_ERROR)
             success = await self.controller.protocol_clips_add(clip_id=clip_id or None, name=name)
-            return ok() if success else error('unknown clip')
+            return ok() if success else failure(FAIL_CLIP_NOT_FOUND)
         if command == 'clips clear':
             success = await self.controller.protocol_clips_clear()
-            return ok() if success else error('timeline unavailable')
+            return ok() if success else failure(FAIL_TIMELINE_EMPTY)
         if command == 'clips get':
             clips = await self.controller.list_clips()
             lines = [f'clip count: {len(clips)}']
             for clip in clips:
-                lines.append(f'{clip.deck_id}: {clip.name} {clip.duration_timecode} {clip.framerate:.2f}')
+                # Spec line format: {id}: {name} {start timecode} {duration}.
+                lines.append(f'{clip.deck_id}: {clip.name} 00:00:00:00 {clip.duration_timecode}')
             return response(205, 'clips info:', *lines)
         if command == 'transport info':
             t = self.state.transport
@@ -130,9 +147,11 @@ class HyperDeckServer:
                 f'speed: {t.speed}',
                 f'slot id: {t.slot_id}',
                 f'clip id: {t.clip_id}',
+                f'single clip: {str(t.single_clip).lower()}',
                 f'display timecode: {t.display_timecode}',
                 f'timecode: {t.timecode}',
                 f'video format: {t.video_format}',
+                f'loop: {str(t.loop).lower()}',
             )
         if command == 'slot info':
             slot = await self.controller.slot_snapshot()
@@ -147,7 +166,7 @@ class HyperDeckServer:
             )
         if command == 'slot select':
             slot_id = int(params.get('slot id', '1') or 1)
-            return ok() if slot_id == 1 else error('unknown slot id')
+            return ok() if slot_id == 1 else failure(FAIL_INVALID_VALUE)
         if command == 'configuration':
             return response(
                 211,
@@ -165,15 +184,15 @@ class HyperDeckServer:
                 try:
                     speed = float(params['speed'])
                 except ValueError:
-                    return error('invalid speed')
+                    return failure(FAIL_INVALID_VALUE)
                 if speed == 0:
                     await self.controller.pause()
                     return ok()
                 if speed < 0:
-                    return error('reverse playback not supported')
+                    return failure(FAIL_INVALID_VALUE)
             target_clip_id = self.state.playrange_clip_id or self.state.transport.clip_id or None
             success = await self.controller.play(clip_id=target_clip_id, loop=loop, single_clip=single_clip, speed=speed)
-            return ok() if success else error(self.controller.player.last_error or 'playback unavailable')
+            return ok() if success else failure(FAIL_INVALID_STATE)
         if command == 'stop':
             await self.controller.stop_playback()
             return ok()
@@ -181,7 +200,7 @@ class HyperDeckServer:
             clip_target = (params.get('clip') or '').strip().lower()
             if clip_target == 'start':
                 success = await self.controller.goto_clip(self.state.transport.clip_id)
-                return ok() if success else error('unknown clip id')
+                return ok() if success else failure(FAIL_CLIP_NOT_FOUND)
             if clip_target == 'end':
                 success = await self.controller.goto_clip(self.state.transport.clip_id)
                 if success:
@@ -194,10 +213,36 @@ class HyperDeckServer:
                             timecode=clip.duration_timecode,
                             display_timecode=clip.duration_timecode,
                         )
-                return ok() if success else error('unknown clip id')
-            clip_id = int(params.get('clip id', '0') or 0)
+                return ok() if success else failure(FAIL_CLIP_NOT_FOUND)
+            if 'timecode' in params:
+                clip = await self.controller.clip_store.get_clip(self.state.transport.clip_id)
+                if not clip:
+                    return failure(FAIL_CLIP_NOT_FOUND)
+                offset = timecode_to_seconds(params['timecode'], clip.framerate)
+                if offset is None:
+                    return failure(FAIL_INVALID_VALUE)
+                raw = params['timecode'].strip()
+                target = offset
+                if raw.startswith(('+', '-')):
+                    target = float(self.state.transport.elapsed_seconds or 0.0) + offset
+                success = await self.controller.seek_current_clip(target)
+                return ok() if success else failure(FAIL_INVALID_STATE)
+            raw_clip_id = (params.get('clip id') or '').strip()
+            if not raw_clip_id:
+                return failure(FAIL_SYNTAX_ERROR)
+            try:
+                value = int(raw_clip_id)
+            except ValueError:
+                return failure(FAIL_INVALID_VALUE)
+            # `goto: clip id: +1` / `-1` are relative moves from the current clip.
+            if raw_clip_id.startswith(('+', '-')):
+                clip_id = (self.state.transport.clip_id or 0) + value
+            else:
+                clip_id = value
+            if not await self.controller.clip_store.get_clip(clip_id):
+                return failure(FAIL_CLIP_NOT_FOUND)
             success = await self.controller.goto_clip(clip_id)
-            return ok() if success else error('unknown clip id')
+            return ok() if success else failure(FAIL_INVALID_STATE)
         if command == 'playrange set':
             clip_id = int(params.get('clip id', '0') or 0)
             self.state.playrange_clip_id = clip_id
@@ -214,9 +259,21 @@ class HyperDeckServer:
         if command == 'preview info':
             return response(212, 'preview:', f'enabled: {str(self.state.preview_enabled).lower()}')
         if command == 'notify':
+            if not params:
+                # A bare `notify` query returns the current subscription flags.
+                return response(
+                    209,
+                    'notify:',
+                    f'transport: {str(session.notify_transport).lower()}',
+                    f'slot: {str(session.notify_slot).lower()}',
+                    f'remote: {str(session.notify_remote).lower()}',
+                    'configuration: false',
+                    f'clips: {str(session.notify_clips).lower()}',
+                )
             session.notify_transport = boolish(params.get('transport'), session.notify_transport)
             session.notify_slot = boolish(params.get('slot'), session.notify_slot)
             session.notify_clips = boolish(params.get('clips'), session.notify_clips)
+            session.notify_remote = boolish(params.get('remote'), session.notify_remote)
             return ok()
         if command == 'remote':
             enabled = boolish(params.get('enable'), True)
@@ -224,7 +281,12 @@ class HyperDeckServer:
             await self.controller.set_remote_enabled(enabled)
             return ok()
         if command == 'remote info':
-            return response(213, 'remote:', f'enabled: {str(self.state.remote_enabled).lower()}')
+            return response(
+                210,
+                'remote info:',
+                f'enabled: {str(self.state.remote_enabled).lower()}',
+                'override: false',
+            )
         if command == 'ping':
             return ok()
         if command == 'help':
@@ -244,12 +306,16 @@ class HyperDeckServer:
                 'play: speed: <10-200> loop: <true|false> single clip: <true|false>',
                 'stop',
                 'goto: clip id: <n>',
+                'goto: clip id: +/-<n>',
                 'goto: clip: <start|end>',
+                'goto: timecode: <hh:mm:ss:ff>',
+                'goto: timecode: +/-<hh:mm:ss:ff>',
                 'playrange set: clip id: <n>',
                 'playrange clear',
                 'preview: enable: <true|false>',
                 'preview info',
-                'notify: transport: <true|false> slot: <true|false> clips: <true|false>',
+                'notify',
+                'notify: transport: <true|false> slot: <true|false> remote: <true|false> clips: <true|false>',
                 'remote: enable: <true|false>',
                 'remote info',
                 'ping',
@@ -260,7 +326,7 @@ class HyperDeckServer:
             await session.writer.drain()
             session.writer.close()
             return None
-        return error('unsupported command')
+        return failure(FAIL_SYNTAX_ERROR)
 
     async def _broadcast_events(self) -> None:
         assert self._queue is not None
@@ -276,16 +342,18 @@ class HyperDeckServer:
                     f"speed: {payload['speed']}",
                     f"slot id: {payload['slot_id']}",
                     f"clip id: {payload['clip_id']}",
+                    f"single clip: {str(payload['single_clip']).lower()}",
                     f"display timecode: {payload['display_timecode']}",
                     f"timecode: {payload['timecode']}",
                     f"video format: {payload['video_format']}",
+                    f"loop: {str(payload['loop']).lower()}",
                 )
                 targets = [s for s in self.sessions.values() if s.notify_transport]
             elif event_type == 'clips':
                 clips = payload['clips']
                 lines = [f"clip count: {len(clips)}"]
                 for clip in clips:
-                    lines.append(f"{clip['deck_id']}: {clip['name']} {clip['duration_timecode']} {clip['framerate']:.2f}")
+                    lines.append(f"{clip['deck_id']}: {clip['name']} 00:00:00:00 {clip['duration_timecode']}")
                 packet = response(505, 'clips info:', *lines)
                 targets = [s for s in self.sessions.values() if s.notify_clips]
             elif event_type == 'slot':
@@ -303,8 +371,13 @@ class HyperDeckServer:
                 packet = response(506, 'preview:', f"enabled: {str(payload['enabled']).lower()}")
                 targets = [s for s in self.sessions.values() if s.notify_transport]
             elif event_type == 'remote':
-                packet = response(511, 'remote:', f"enabled: {str(payload['enabled']).lower()}")
-                targets = list(self.sessions.values())
+                packet = response(
+                    510,
+                    'remote info:',
+                    f"enabled: {str(payload['enabled']).lower()}",
+                    'override: false',
+                )
+                targets = [s for s in self.sessions.values() if s.notify_remote]
             else:
                 continue
             for session in list(targets):

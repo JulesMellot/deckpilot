@@ -34,13 +34,31 @@ It is **alpha / early beta**: already used for real-world validation, still in t
 
 **Numbers an operator trusts.** Live timecode with mark-aware countdown, a real VU meter driven by precomputed loudness envelopes (zero CPU cost during playback), CPU temperature / load / RAM on the health panel, and the HyperDeck protocol log streaming in green-on-black like it should.
 
-## What the ATEM sees
+## What the ATEM sees: the HyperDeck protocol
 
-A multi-client TCP server on port `9993` implementing the commands ATEM and Companion actually use:
+DeckPilot implements the **[Blackmagic HyperDeck Ethernet Protocol](https://documents.blackmagicdesign.com/DeveloperManuals/HyperDeckEthernetProtocol.pdf)** (text over TCP `9993`, announced as protocol `1.11`) and has been audited line-by-line against the official specification — response codes, parameter names, and message formats included.
 
-`device info` · `clips get` · `clips add` / `clips clear` (build rundowns remotely) · `transport info` · `slot info` / `slot select` · `play` (with `speed: 10–200`, `loop`, `single clip`) · `stop` · `goto` · `playrange set/clear` · `preview` · `notify` · `remote` · `ping` · `help`
+**The wire format, exactly as a real deck speaks it:**
 
-Async transport/slot/clips notifications are pushed to subscribed controllers, and the deck's network target is displayed in the web UI so ATEM setup is copy-paste.
+- on connect: `500 connection info:` with protocol version and model
+- success: `200 ok`; informational replies in the `2xx` range (`204 device info:`, `205 clips info:`, `208 transport info:`, `209 notify:`, `210 remote info:`, `211 configuration:`)
+- failures use the official `1xx` codes: `100 syntax error`, `102 invalid value`, `107 timeline empty`, `111 remote control disabled`, `112 clip not found`, `150 invalid state`
+- asynchronous notifications in the `5xx` range (`508 transport info:`, `502 slot info:`, `510 remote info:`), **disabled by default per the spec** — controllers opt in with `notify:`
+
+**Implemented commands** — the set ATEM and Companion actually use:
+
+| Group | Commands |
+|---|---|
+| Identity | `device info` (slot count, software version), `configuration`, `ping`, `help`, `quit` |
+| Clips | `clips get` (spec format: `id: name start duration`), `clips add` by id or name, `clips clear` — remote rundown building |
+| Transport | `play` (`speed: 10–200`, `loop`, `single clip`), `stop`, `transport info` (incl. `single clip` and `loop` flags) |
+| Cueing | `goto: clip id: N`, **relative `goto: clip id: +1/-1`**, `goto: clip: start/end`, `goto: timecode:` (absolute and `+/-` relative), `playrange set/clear` |
+| Sessions | `notify` (query + set, per-connection flags), `remote` / `remote info`, `preview` |
+| Slots | `slot info`, `slot select` (one virtual slot) |
+
+**Honest deviations from a real deck:** DeckPilot is playout-only — `record`, disk formatting, and multi-slot commands are not implemented (a controller asking gets a clean `100`/`102` failure, never a hang). Clip start timecodes are reported as `00:00:00:00` since files have no embedded timecode track. Reverse and >2× speeds return `102 invalid value` (the Pi's decoder can't honor them, and lying to the switcher would desync its UI).
+
+The deck's network target is displayed in the web UI so ATEM setup is copy-paste, and the protocol log streams live in the operator interface — protocol traces from real ATEM hardware are the most valuable contribution you can make right now.
 
 ## How it works
 

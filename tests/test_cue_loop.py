@@ -25,6 +25,11 @@ class FakeClip:
     def filename(self) -> str:
         return self.filepath.split('/')[-1]
 
+    @property
+    def duration_timecode(self) -> str:
+        total = int(self.duration_seconds)
+        return f'{total // 3600:02d}:{(total % 3600) // 60:02d}:{total % 60:02d}:00'
+
     def trim_bounds(self) -> tuple[float, float]:
         duration = max(0.0, float(self.duration_seconds or 0.0))
         start = max(0.0, min(float(self.mark_in_seconds or 0.0), duration))

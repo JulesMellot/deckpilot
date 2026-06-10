@@ -242,6 +242,7 @@ DeckPilot is in **alpha / early beta**. It is already usable for testing and rea
 - configurable operator profiles or locked-down UI modes (and authentication)
 - recording from a capture input
 - richer ATEM debugging tools
+- network contribution output: SRT/RTP via the hardware H.264 encoder fits the Pi 3B+; NDI (full bandwidth) was evaluated and ruled out on the 3B+ (100 Mbps NIC + CPU), it would be a Pi 5-class optional module via GStreamer `ndisink`
 
 ## Contributing
 

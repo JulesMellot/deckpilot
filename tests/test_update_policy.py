@@ -31,6 +31,44 @@ class UpdatePolicyTests(unittest.TestCase):
         self.assertEqual(plan['restart_target'], 'raspberry_pi')
         self.assertEqual(plan['reboot_trigger_files'], ['scripts/show_boot_ip.py'])
 
+    def test_unit_definition_changes_recommend_bootstrap_refresh(self) -> None:
+        plan = build_update_plan(
+            ['scripts/bootstrap.sh', 'app/main.py'],
+            platform_name='linux',
+            install_mode='systemd',
+            automatic_reboot_available=True,
+            update_available=True,
+        )
+
+        self.assertFalse(plan['reboot_required'])
+        self.assertEqual(plan['restart_target'], 'deckpilot')
+        self.assertTrue(plan['bootstrap_refresh_recommended'])
+        self.assertEqual(plan['system_unit_files'], ['scripts/bootstrap.sh'])
+        self.assertIn('re-run', plan['restart_notice'])
+
+    def test_runtime_change_does_not_recommend_bootstrap_refresh(self) -> None:
+        plan = build_update_plan(
+            ['app/main.py'],
+            platform_name='linux',
+            install_mode='systemd',
+            automatic_reboot_available=True,
+            update_available=True,
+        )
+
+        self.assertFalse(plan['bootstrap_refresh_recommended'])
+        self.assertNotIn('re-run', plan['restart_notice'])
+
+    def test_manual_install_does_not_recommend_bootstrap_refresh(self) -> None:
+        plan = build_update_plan(
+            ['deploy/pideck-open.service'],
+            platform_name='darwin',
+            install_mode='manual',
+            automatic_reboot_available=False,
+            update_available=True,
+        )
+
+        self.assertFalse(plan['bootstrap_refresh_recommended'])
+
     def test_unknown_remote_changes_keep_automatic_decision(self) -> None:
         plan = build_update_plan(
             [],

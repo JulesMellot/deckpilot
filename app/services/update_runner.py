@@ -217,7 +217,7 @@ def main() -> None:
             write_status(
                 status_path,
                 phase='rebooting',
-                message='Redemarrage du Raspberry Pi pour appliquer la mise a jour...',
+                message='Rebooting the Raspberry Pi to apply the update...',
                 current_commit=current_commit,
                 current_commit_full=current_commit_full,
                 reboot_required=True,
@@ -235,7 +235,7 @@ def main() -> None:
 
         restart_message = 'Restarting DeckPilot to apply the update...'
         if update_plan['reboot_required'] is True and not update_plan['automatic_reboot_available']:
-            restart_message = 'DeckPilot va redemarrer maintenant. Un redemarrage manuel du Raspberry Pi restera requis apres la mise a jour.'
+            restart_message = 'DeckPilot is restarting now. A manual Raspberry Pi reboot is still required after the update.'
         write_status(
             status_path,
             phase='restarting',
@@ -259,14 +259,18 @@ def main() -> None:
         if not wait_for_http(args.port):
             raise RuntimeError('DeckPilot did not come back online after the update.')
 
+        success_message = 'DeckPilot updated successfully.'
+        if update_plan['reboot_required'] and not update_plan['automatic_reboot_available']:
+            success_message = 'DeckPilot updated successfully. A manual Raspberry Pi reboot is still required.'
+        elif update_plan.get('bootstrap_refresh_recommended'):
+            success_message = (
+                'DeckPilot updated successfully. System service definitions changed:'
+                ' re-run scripts/bootstrap.sh once to apply them.'
+            )
         write_status(
             status_path,
             phase='success',
-            message=(
-                'DeckPilot updated successfully. Un redemarrage manuel du Raspberry Pi reste requis.'
-                if update_plan['reboot_required'] and not update_plan['automatic_reboot_available']
-                else 'DeckPilot updated successfully.'
-            ),
+            message=success_message,
             finished_at=time.time(),
             current_commit=current_commit,
             current_commit_full=current_commit_full,

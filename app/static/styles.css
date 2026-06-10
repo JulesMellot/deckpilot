@@ -1135,6 +1135,9 @@ header { grid-area: header; }
 
 .preview-dialog {
   width: min(960px, 100%);
+  /* Never taller than the viewport: long dialogs scroll internally. */
+  max-height: calc(100vh - 3rem);
+  overflow-y: auto;
   background: var(--bg-panel);
   border: 1px solid var(--border-bright);
   border-radius: 10px;

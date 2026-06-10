@@ -53,18 +53,18 @@ def build_update_plan(
     if reboot_required is True:
         restart_target = 'raspberry_pi'
         if automatic_reboot_available:
-            restart_notice = 'Cette mise a jour redemarrera automatiquement le Raspberry Pi.'
+            restart_notice = 'This update will reboot the Raspberry Pi automatically.'
         else:
-            restart_notice = 'Cette mise a jour necessite un redemarrage du Raspberry Pi, mais le reboot automatique nest pas encore configure sur cette installation.'
-        restart_reason = 'Cette mise a jour modifie des composants appliance du Raspberry Pi hors du process DeckPilot.'
+            restart_notice = 'This update requires a Raspberry Pi reboot, but automatic reboot is not configured on this installation yet.'
+        restart_reason = 'This update changes Raspberry Pi appliance components outside the DeckPilot process.'
     elif reboot_required is False:
         restart_target = 'deckpilot'
-        restart_notice = 'Cette mise a jour redemarre seulement DeckPilot. Un reboot du Raspberry Pi nest pas obligatoire.'
-        restart_reason = 'Aucun composant systeme Raspberry Pi necessitant un reboot na ete detecte dans cette mise a jour.'
+        restart_notice = 'This update only restarts DeckPilot. No Raspberry Pi reboot is required.'
+        restart_reason = 'No system component requiring a reboot was detected in this update.'
     else:
         restart_target = 'auto'
-        restart_notice = 'DeckPilot determinera automatiquement pendant l update si un reboot du Raspberry Pi est necessaire.'
-        restart_reason = 'Les changements distants nont pas encore pu etre analyses avec certitude.'
+        restart_notice = 'DeckPilot will decide during the update whether a Raspberry Pi reboot is needed.'
+        restart_reason = 'Remote changes could not be fully analyzed yet.'
 
     return {
         'reboot_required': reboot_required,

@@ -20,6 +20,7 @@ class MPVController:
         self._command_lock = asyncio.Lock()
         self._request_id = 0
         self._selected_output_id: str | None = None
+        self._selected_audio_device: str = (config.audio_device or 'auto').strip() or 'auto'
         self._current_video_format: str = config.default_video_format
         self._output_width: int | None = None
         self._output_height: int | None = None
@@ -191,6 +192,29 @@ class MPVController:
     async def set_mute(self, enabled: bool) -> bool:
         return await self._command_ok(['set_property', 'mute', enabled])
 
+    @property
+    def selected_audio_device(self) -> str:
+        return self._selected_audio_device
+
+    async def list_audio_devices(self) -> list[dict[str, str]]:
+        response = await self.command(['get_property', 'audio-device-list'])
+        if not response or response.get('error') != 'success':
+            return []
+        devices: list[dict[str, str]] = []
+        for item in response.get('data') or []:
+            if not isinstance(item, dict) or not item.get('name'):
+                continue
+            name = str(item['name'])
+            devices.append({'name': name, 'description': str(item.get('description') or name)})
+        return devices
+
+    async def set_audio_device(self, device: str) -> bool:
+        self._selected_audio_device = (device or 'auto').strip() or 'auto'
+        if not await self.is_available():
+            # Remembered anyway: the next mpv start picks it up via --audio-device.
+            return True
+        return await self._command_ok(['set_property', 'audio-device', self._selected_audio_device])
+
     async def set_output(self, output_id: str) -> None:
         if output_id == self._selected_output_id:
             return
@@ -255,6 +279,8 @@ class MPVController:
             f'--log-file={log_path}',
             f'--input-ipc-server={self._ipc_path()}',
         ]
+        if self._selected_audio_device != 'auto':
+            base_args.append(f'--audio-device={self._selected_audio_device}')
         if self._selected_output_id and self._selected_output_id.isdigit():
             base_args.append(f'--fs-screen={self._selected_output_id}')
         drm_connector = None

@@ -94,6 +94,17 @@ EDITABLE_CONFIG_KEYS = (
 )
 
 
+def _write_config_updates(config_path: Path, updates: dict[str, Any]) -> None:
+    existing: dict[str, Any] = {}
+    if config_path.exists():
+        try:
+            existing = json.loads(config_path.read_text(encoding='utf-8'))
+        except (OSError, json.JSONDecodeError):
+            existing = {}
+    existing.update(updates)
+    config_path.write_text(json.dumps(existing, indent=2) + '\n', encoding='utf-8')
+
+
 class MarksRequest(BaseModel):
     mark_in_seconds: float | None = None
     mark_out_seconds: float | None = None
@@ -105,6 +116,10 @@ class OutputSelectionRequest(BaseModel):
 
 class OutputCanvasRequest(BaseModel):
     mode: str
+
+
+class AudioDeviceRequest(BaseModel):
+    device: str
 
 
 class FolderRequest(BaseModel):
@@ -300,6 +315,10 @@ def build_app(
     async def get_outputs() -> dict[str, Any]:
         return {'outputs': await controller.list_outputs()}
 
+    @app.get('/api/system/audio-devices')
+    async def get_audio_devices() -> dict[str, Any]:
+        return {'devices': await controller.list_audio_devices()}
+
     @app.get('/api/system/update')
     async def get_update_status() -> dict[str, Any]:
         return await update_manager.get_status()
@@ -357,18 +376,7 @@ def build_app(
             updates[key] = coerced
 
         config_path = Path(controller.config.config_path or 'config.json')
-
-        def write_config() -> None:
-            existing: dict[str, Any] = {}
-            if config_path.exists():
-                try:
-                    existing = json.loads(config_path.read_text(encoding='utf-8'))
-                except (OSError, json.JSONDecodeError):
-                    existing = {}
-            existing.update(updates)
-            config_path.write_text(json.dumps(existing, indent=2) + '\n', encoding='utf-8')
-
-        await asyncio.to_thread(write_config)
+        await asyncio.to_thread(_write_config_updates, config_path, updates)
         await state.add_log('info', 'system', f'Configuration updated ({", ".join(updates)}). Restart required.')
         return {'ok': True, 'updated': list(updates), 'restart_required': True}
 
@@ -561,6 +569,14 @@ def build_app(
     async def set_output_canvas(payload: OutputCanvasRequest) -> dict[str, Any]:
         await controller.set_output_canvas_mode(payload.mode)
         return {'ok': True, 'display': await controller.display_snapshot()}
+
+    @app.post('/api/system/audio-device')
+    async def set_audio_device(payload: AudioDeviceRequest) -> dict[str, Any]:
+        await controller.select_audio_device(payload.device)
+        config_path = Path(controller.config.config_path or 'config.json')
+        await asyncio.to_thread(_write_config_updates, config_path, {'audio_device': controller.config.audio_device})
+        await state.add_log('info', 'system', f'Audio output set to {controller.config.audio_device}.')
+        return {'ok': True, 'devices': await controller.list_audio_devices()}
 
     @app.post('/api/system/black')
     async def cut_black() -> dict[str, Any]:

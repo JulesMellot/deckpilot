@@ -712,7 +712,28 @@ class DeckController:
         await self._publish_health()
 
     def audio_snapshot(self) -> Dict[str, Any]:
-        return {'volume': self._volume, 'muted': self._muted}
+        return {'volume': self._volume, 'muted': self._muted, 'device': self.player.selected_audio_device}
+
+    async def list_audio_devices(self) -> list[Dict[str, Any]]:
+        selected = self.player.selected_audio_device
+        devices = await self.player.list_audio_devices()
+        if not any(device['name'] == 'auto' for device in devices):
+            devices.insert(0, {'name': 'auto', 'description': 'Auto (system default)'})
+        # Keep the saved choice visible even while mpv cannot enumerate it
+        # (device unplugged, player restarting).
+        if not any(device['name'] == selected for device in devices):
+            devices.append({'name': selected, 'description': selected})
+        return [
+            {'id': device['name'], 'label': device['description'], 'selected': device['name'] == selected}
+            for device in devices
+        ]
+
+    async def select_audio_device(self, device: str) -> None:
+        if not await self.player.set_audio_device(device):
+            await self._report_error('player', f'Audio device change failed: {self.player.last_error or "unknown player error"}')
+        self.config.audio_device = self.player.selected_audio_device
+        await self.state.publish('audio', self.audio_snapshot())
+        await self._publish_health()
 
     async def slot_snapshot(self) -> Dict[str, Any]:
         clips = await self.clip_store.list_clips()

@@ -298,11 +298,17 @@ Rough order, not hard dates. The cheap-Pi baseline always comes first; the heavi
 
 **Next → bigger hardware, bigger output**
 
-- 4K and HDR playback on Pi 5 / x86, gated by a hardware capability check.
-- NDI output via GStreamer `ndisink` (ruled out on the 3B+'s 100 Mbps NIC, realistic on a Pi 5).
-- SRT contribution output through the Pi's hardware H.264 encoder.
-- Recording from a capture input, so the deck can ingest as well as play out.
-- Multi-display / multi-channel control from one box.
+These unlock on more capable boards, gated by a hardware capability check so the cheap-Pi build never tries something it can't sustain. The honest catch: the Pi 5 decodes 4K beautifully but has **no hardware video encoder**, while the Pi 4 *can* encode H.264 in hardware but struggles at 4K. So anything that has to encode while playing out points to a Pi 4 (1080p) or a cheap x86 box with QuickSync / NVENC — which is often the better value once you need a live output anyway.
+
+| Feature | Best on | Notes |
+|---|---|---|
+| 4K / HDR playback | Pi 5, or x86 | Solid in HEVC (Pi 5 decodes 4Kp60); 4K H.264 is software-only and borderline. |
+| NDI output (`ndisink`) | Pi 5 (Gigabit), or x86 | Ruled out on the 3B+'s 100 Mbps NIC. NDI-HX needs an encoder, so full-quality NDI leans x86. |
+| SRT contribution out | Pi 4 (HW H.264), or x86 | Pi 4's hardware encoder does 1080p; on Pi 5 it falls back to software (1080p at best). |
+| Recording from capture in | Pi 4, or x86 | Same encoder story — realistic at 1080p, 4K record wants x86. |
+| Multi-display / multi-channel | Pi 5, or x86 | One box driving several outputs needs the extra CPU and RAM. |
+
+A **cheap mini-PC** (a used or low-cost x86 box with Intel QuickSync) is the sweet spot for the encode-heavy features: hardware encode *and* decode in one place, for not much more than a Pi 5.
 
 **Later → operator comfort & deployment**
 

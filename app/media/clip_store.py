@@ -193,17 +193,29 @@ class ClipStore:
                 roots.append(mount)
         return roots
 
-    def _scan_source_files(self, roots: list[str]) -> list[Path]:
+    def _scan_source_files(self, roots: list[str]) -> tuple[list[Path], list[str]]:
+        """Return (media files, roots that were successfully read).
+
+        A root missing from the second list was unreadable this pass (vanished
+        or browned-out drive); its existing clips must not be treated as deleted.
+        """
         allowed = set(self.config.allowed_upload_extensions)
         files: list[Path] = []
         seen_names: set[str] = set()
+        scanned_roots: list[str] = []
         for root in roots:
             try:
                 entries = sorted(Path(root).iterdir())
             except OSError:
-                # An unreadable / vanished mount must never abort the scan.
+                # An unreadable / vanished mount must never abort the scan, and
+                # is deliberately left out of scanned_roots.
                 continue
+            scanned_roots.append(root)
             for path in entries:
+                # Skip dotfiles, incl. macOS AppleDouble sidecars (._*) and
+                # .DS_Store that ride along on USB / SMB copies.
+                if path.name.startswith('.'):
+                    continue
                 if not path.is_file() or path.suffix.lower() not in allowed:
                     continue
                 # Filename is the library's unique key; the first disk to carry
@@ -212,7 +224,7 @@ class ClipStore:
                     continue
                 seen_names.add(path.name)
                 files.append(path)
-        return files
+        return files, scanned_roots
 
     async def sync_with_disk(self) -> None:
         pending_paths = await asyncio.to_thread(self._sync_with_disk_sync)
@@ -220,7 +232,7 @@ class ClipStore:
 
     def _sync_with_disk_sync(self) -> list[str]:
         roots = self._source_roots()
-        files = self._scan_source_files(roots)
+        files, scanned_roots = self._scan_source_files(roots)
         pending_paths: list[str] = []
         with self._connect() as conn:
             existing = {row['filename']: row for row in conn.execute('SELECT * FROM clips').fetchall()}
@@ -275,13 +287,14 @@ class ClipStore:
                 )
                 pending_paths.append(str(file_path))
 
-            # Delete only files that vanished from a *connected* disk. Clips on
-            # an unplugged drive are kept (shown offline) so their names, marks,
+            # Delete only files that vanished from a disk we actually read this
+            # pass. Clips on an unplugged drive — or one that browned out and
+            # failed to scan — are kept (shown offline) so their names, marks,
             # folders and playlist references survive until the drive returns.
             disk_paths = {os.path.normpath(str(item)) for item in files}
             for row in conn.execute('SELECT filename, filepath, thumbnail_path FROM clips WHERE is_builtin = 0 AND is_remote = 0').fetchall():
-                root_connected = any(_path_under(root, row['filepath']) for root in roots)
-                if root_connected and os.path.normpath(row['filepath']) not in disk_paths:
+                root_scanned = any(_path_under(root, row['filepath']) for root in scanned_roots)
+                if root_scanned and os.path.normpath(row['filepath']) not in disk_paths:
                     if row['thumbnail_path']:
                         Path(row['thumbnail_path']).unlink(missing_ok=True)
                     conn.execute('DELETE FROM clips WHERE filename = ?', (row['filename'],))

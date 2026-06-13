@@ -122,6 +122,27 @@ class ClipStoreThumbnailTests(unittest.TestCase):
             self.store._sync_with_disk_sync()
             self.assertEqual(len(self.store._list_clips_sync()), 0)
 
+    def test_sync_ignores_dotfiles_and_appledouble(self) -> None:
+        (Path(self.config.clips_dir) / 'real.mp4').write_bytes(b'a')
+        (Path(self.config.clips_dir) / '._real.mp4').write_bytes(b'apple-double')
+        (Path(self.config.clips_dir) / '.DS_Store').write_bytes(b'finder')
+        with patch('app.media.clip_store.removable_media_roots', return_value=[]):
+            self.store._sync_with_disk_sync()
+        clips = self.store._list_clips_sync()
+        self.assertEqual([c.filename for c in clips], ['real.mp4'])
+
+    def test_sync_keeps_clips_when_a_connected_root_fails_to_scan(self) -> None:
+        (Path(self.config.clips_dir) / 'house.mp4').write_bytes(b'a')
+        with patch('app.media.clip_store.removable_media_roots', return_value=[]):
+            self.store._sync_with_disk_sync()
+        self.assertEqual(len(self.store._list_clips_sync()), 1)
+
+        # Simulate a pass where no root could be read (e.g. a transient I/O
+        # error): nothing must be deleted.
+        with patch.object(self.store, '_scan_source_files', return_value=([], [])):
+            self.store._sync_with_disk_sync()
+        self.assertEqual(len(self.store._list_clips_sync()), 1)
+
     def test_remote_clip_is_inserted_as_link_source(self) -> None:
         key, url = self.store._insert_remote_clip_sync('https://cdn.example.com/live/stream.m3u8', None)
         clips = self.store._list_clips_sync()

@@ -4,6 +4,7 @@ import asyncio
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from app.core.config import AppConfig
 from app.services.watch_folder import WatchFolderService
@@ -69,6 +70,34 @@ class WatchFolderTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await self.service.tick())
         self.assertFalse(await self.service.tick())
         self.assertEqual(self.controller.refresh_count, 0)
+
+    async def test_dotfiles_and_appledouble_are_ignored(self) -> None:
+        (Path(self.config.clips_dir) / '._clip.mp4').write_bytes(b'apple-double-junk')
+        (Path(self.config.clips_dir) / '.DS_Store').write_bytes(b'finder-junk')
+
+        self.assertFalse(await self.service.tick())
+        self.assertFalse(await self.service.tick())
+        self.assertEqual(self.controller.refresh_count, 0)
+
+    async def test_browned_out_usb_is_not_treated_as_mass_delete(self) -> None:
+        usb_dir = Path(self.temp_dir.name) / 'usb'
+        usb_dir.mkdir()
+        (usb_dir / 'field.mp4').write_bytes(b'clip-on-the-stick')
+        usb_path = str(usb_dir / 'field.mp4')
+
+        with patch('app.services.watch_folder.removable_media_roots', return_value=[str(usb_dir)]):
+            await self.service.tick()                       # first sight
+            self.assertTrue(await self.service.tick())      # stable -> ingest
+        self.assertIn(usb_path, self.service._ingested)
+        refreshes = self.controller.refresh_count
+
+        # The drive browns out and re-enumerates (no longer mounted): its file
+        # must be retained, not reported as removed, and only a single refresh
+        # fires for the drive going away.
+        with patch('app.services.watch_folder.removable_media_roots', return_value=[]):
+            await self.service.tick()
+        self.assertIn(usb_path, self.service._ingested)
+        self.assertEqual(self.controller.refresh_count, refreshes + 1)
 
     async def test_removed_file_triggers_refresh(self) -> None:
         clip = Path(self.config.clips_dir) / 'gone.mp4'

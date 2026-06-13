@@ -190,7 +190,7 @@ I target the Raspberry Pi on purpose, and specifically the cheaper end of it. Th
 
 Pi 4 and Pi 5 prices have climbed to a point that stopped being reasonable, and the competing boards followed. So instead of chasing the fastest hardware, I push to get as much as possible out of the smallest — a Pi 3B+ with 1 GB of RAM. If it runs well there, it runs well everywhere, and nobody has to buy a board that costs more than the rest of their kit.
 
-The flip side is the nice part: the optimization is for the floor, not a ceiling. Put DeckPilot on more powerful hardware and it simply does more — 4K playback, HDR, an NDI signal, even recording become realistic on a Pi 5 or a small x86 box. The cheap board is the baseline I refuse to break, not the limit.
+The flip side is the nice part: the optimization is for the floor, not a ceiling. Put DeckPilot on more powerful hardware and it can do more — 4K playback, HDR, an NDI signal, even recording become realistic on a Pi 5 or a small x86 box. These need beefier (and pricier) hardware, and to be honest they are not properly implemented yet — they are on the near-term roadmap, not something you can switch on today. The cheap board is the baseline I refuse to break, not the limit.
 
 ### Built lean, on purpose
 
@@ -287,9 +287,30 @@ Beyond the HyperDeck protocol, DeckPilot exposes a full HTTP + WebSocket API:
 
 ## Roadmap
 
-- **Near term** — real-world ATEM validation, broader protocol coverage, operator UX polish, import diagnostics, first-run docs.
-- **Mid term** — multi-display control, Windows runtime validation, structured logging and fault reporting, more protocol test coverage, packaged releases.
-- **Exploring** — SRT contribution output via the Pi's hardware H.264 encoder (full-bandwidth NDI was evaluated and ruled out on the 3B+ with its 100 Mbps NIC, but stays a candidate Pi 5 module via GStreamer `ndisink`), richer dashboards, operator profiles / authentication, recording from a capture input.
+Rough order, not hard dates. The cheap-Pi baseline always comes first; the heavier features unlock on more powerful hardware once they are solid.
+
+**Now → hardening the core**
+
+- Real-world ATEM validation across more switcher models and firmware.
+- Broader HyperDeck protocol coverage and a wider automated test suite.
+- Import diagnostics (tell the operator *why* a file was rejected or stalled).
+- First-run setup guide and clearer in-app errors.
+
+**Next → bigger hardware, bigger output**
+
+- 4K and HDR playback on Pi 5 / x86, gated by a hardware capability check.
+- NDI output via GStreamer `ndisink` (ruled out on the 3B+'s 100 Mbps NIC, realistic on a Pi 5).
+- SRT contribution output through the Pi's hardware H.264 encoder.
+- Recording from a capture input, so the deck can ingest as well as play out.
+- Multi-display / multi-channel control from one box.
+
+**Later → operator comfort & deployment**
+
+- Operator profiles and optional authentication for shared decks.
+- Richer health and history dashboards.
+- Structured logging and fault reporting for unattended installs.
+- Windows runtime validation and packaged, signed releases.
+- Scheduled / time-of-day playout for unattended channels.
 
 ---
 

@@ -106,6 +106,32 @@ Live timecode with mark-aware countdown, a real VU meter driven by precomputed l
 
 ---
 
+## How it compares
+
+I built DeckPilot after running live shows off the alternatives, and each one taught me what I was actually missing.
+
+A **real HyperDeck** does the job — it just costs more than the rest of a small kit put together, and most of that price pays for recording and multi-slot features I never touched. I only needed "play this clip when the director says go."
+
+The **DIY HyperDeck emulators** on GitHub got me on air. They are honest about being prototypes, and it shows: VLC- or OMX-based scripts that answer port `9993` with partial protocol coverage, no in/out marks, no rundown, and barely any operator interface. The first time the ATEM strayed off the happy path, the connection desynced.
+
+**OBS** is a great production suite, but it is the wrong shape for this. It is heavy on a Pi, the ATEM can't drive it as a deck (no HyperDeck protocol at all), and "fire clip N on cue" is buried under a tool built for compositing whole scenes.
+
+DeckPilot is the deck I wanted those projects to be: the protocol audited against the spec so the ATEM treats it as real hardware, plus the operator layer a live show needs — fire pads, a NEXT countdown, trim marks, end-of-clip behaviors, safe mode, and a library that survives a USB drive being unplugged mid-show.
+
+| | Real HyperDeck | DIY emulators | OBS | DeckPilot |
+|---|:---:|:---:|:---:|:---:|
+| Cost | hardware $$$ | free | free | free (+ a Pi) |
+| Runs on a Pi 3B+ | — | varies | heavy | by design |
+| ATEM-native HyperDeck protocol | yes | partial | no | yes, spec-audited |
+| In/out marks & rundown | yes | rarely | manual | yes |
+| Operator UI (pads, NEXT, panic) | hardware panel | minimal | not for this | yes |
+| USB offline-safe library | yes | no | — | yes |
+| Maturity | production | prototype | production | alpha, hardening |
+
+Credit where it's due — the DIY emulators ([`mochouinard/python-hyperdeck-server`](https://github.com/mochouinard/python-hyperdeck-server), [`superlou/pideck`](https://github.com/superlou/pideck), and others) are what showed me this was even possible on a Pi.
+
+---
+
 ## What the ATEM sees: the HyperDeck protocol
 
 DeckPilot implements the [Blackmagic HyperDeck Ethernet Protocol](https://documents.blackmagicdesign.com/DeveloperManuals/HyperDeckEthernetProtocol.pdf) — plain text over TCP `9993`, announced as protocol `1.11`. It has been checked line by line against the official spec: response codes, parameter names, and message formats all match.

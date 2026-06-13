@@ -143,6 +143,25 @@ class ClipStoreThumbnailTests(unittest.TestCase):
             self.store._sync_with_disk_sync()
         self.assertEqual(len(self.store._list_clips_sync()), 1)
 
+    def test_bulk_delete_by_filename_removes_only_named_clips(self) -> None:
+        for name in ('a.mp4', 'b.mp4', 'c.mp4'):
+            (Path(self.config.clips_dir) / name).write_bytes(b'x')
+        with patch('app.media.clip_store.removable_media_roots', return_value=[]):
+            self.store._sync_with_disk_sync()
+        deleted = self.store._delete_clips_by_filenames_sync(['a.mp4', 'c.mp4', 'ghost.mp4'])
+        remaining = sorted(c.filename for c in self.store._list_clips_sync())
+        self.assertEqual(deleted, 2)
+        self.assertEqual(remaining, ['b.mp4'])
+        self.assertFalse((Path(self.config.clips_dir) / 'a.mp4').exists())
+        self.assertTrue((Path(self.config.clips_dir) / 'b.mp4').exists())
+
+    def test_bulk_delete_handles_empty_and_offline_entries(self) -> None:
+        # A remote link has no local file; deleting it must not raise.
+        key, _ = self.store._insert_remote_clip_sync('https://cdn.example.com/v.mp4', None)
+        self.assertEqual(self.store._delete_clips_by_filenames_sync([]), 0)
+        self.assertEqual(self.store._delete_clips_by_filenames_sync([key]), 1)
+        self.assertEqual(self.store._list_clips_sync(), [])
+
     def test_remote_clip_is_inserted_as_link_source(self) -> None:
         key, url = self.store._insert_remote_clip_sync('https://cdn.example.com/live/stream.m3u8', None)
         clips = self.store._list_clips_sync()

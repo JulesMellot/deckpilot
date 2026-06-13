@@ -127,6 +127,10 @@ class RemoteClipRequest(BaseModel):
     name: str | None = None
 
 
+class BulkDeleteRequest(BaseModel):
+    filenames: list[str]
+
+
 class FolderRequest(BaseModel):
     folder: str
 
@@ -580,6 +584,11 @@ def build_app(
         await clip_store.set_folder(deck_id, payload.folder)
         await controller.refresh_clips()
         return {'ok': True}
+
+    @app.post('/api/clips/delete')
+    async def delete_clips(payload: BulkDeleteRequest) -> dict[str, Any]:
+        deleted = await controller.delete_clips(payload.filenames)
+        return {'ok': True, 'deleted': deleted}
 
     @app.delete('/api/clips/{deck_id}')
     async def delete_clip(deck_id: int) -> dict[str, Any]:

@@ -1169,6 +1169,36 @@ class ClipStore:
     async def delete_clip(self, deck_id: int) -> None:
         await asyncio.to_thread(self._delete_clip_sync, deck_id)
 
+    async def delete_clips_by_filenames(self, filenames: list[str]) -> int:
+        return await asyncio.to_thread(self._delete_clips_by_filenames_sync, filenames)
+
+    def _delete_clips_by_filenames_sync(self, filenames: list[str]) -> int:
+        # Filename is the library's stable unique key, unlike the positional
+        # deck_id — so bulk deletes resolve the same rows the operator selected
+        # even if the list reordered in between.
+        names = [name for name in dict.fromkeys(filenames) if name]
+        if not names:
+            return 0
+        deleted = 0
+        with self._connect() as conn:
+            placeholders = ','.join('?' * len(names))
+            rows = conn.execute(
+                f'SELECT id, filepath, thumbnail_path FROM clips WHERE filename IN ({placeholders})',
+                names,
+            ).fetchall()
+            for row in rows:
+                # filepath may be a USB path (drive maybe gone) or a URL; either
+                # way removing the local file is best-effort.
+                with contextlib.suppress(OSError):
+                    Path(row['filepath']).unlink(missing_ok=True)
+                if row['thumbnail_path']:
+                    Path(row['thumbnail_path']).unlink(missing_ok=True)
+                conn.execute('DELETE FROM clips WHERE id = ?', (row['id'],))
+                deleted += 1
+            conn.commit()
+        self._invalidate_clips_cache()
+        return deleted
+
     def _delete_clip_sync(self, deck_id: int) -> None:
         with self._connect() as conn:
             rows = conn.execute('SELECT * FROM clips ORDER BY sort_order ASC, id ASC').fetchall()

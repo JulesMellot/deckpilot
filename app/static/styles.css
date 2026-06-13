@@ -1293,6 +1293,7 @@ header { grid-area: header; }
 }
 
 .media-item {
+  position: relative;
   background: var(--bg-panel);
   border: 1px solid var(--border-dim);
   border-radius: 4px;
@@ -1306,6 +1307,26 @@ header { grid-area: header; }
 .media-item.active { border-color: var(--color-accent); }
 .media-item.selected {
   box-shadow: inset 0 0 0 2px var(--color-accent);
+}
+.media-item.multi-selected {
+  box-shadow: inset 0 0 0 3px var(--color-live);
+}
+.media-item.multi-selected::after {
+  content: '✓';
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--color-live);
+  border-radius: 3px;
+  z-index: 2;
 }
 
 .media-grid.list-view .media-item {

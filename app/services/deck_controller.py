@@ -563,6 +563,17 @@ class DeckController:
         await self.clip_store.delete_clip(deck_id)
         await self.refresh_clips()
 
+    async def delete_clips(self, filenames: list[str]) -> int:
+        # Stop playback first if the clip currently on air is being deleted.
+        if self.current_clip_id:
+            current = await self.clip_store.get_clip(self.current_clip_id)
+            if current and current.filename in set(filenames):
+                await self.stop_playback()
+                self.current_clip_id = None
+        count = await self.clip_store.delete_clips_by_filenames(filenames)
+        await self.refresh_clips()
+        return count
+
     async def reorder(self, deck_ids: list[int]) -> None:
         await self.clip_store.reorder(deck_ids)
         await self.playlist_store.reorder_active_playlist(deck_ids)

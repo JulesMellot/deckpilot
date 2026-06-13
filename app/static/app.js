@@ -6,6 +6,9 @@ const state = {
   folderNodeCache: new Map(),
   dragClipId: null,
   selectedClipId: null,
+  // Bulk-select mode: keyed by filename (stable), unlike the positional deck_id.
+  selectMode: false,
+  selection: new Set(),
   selectedPlaylistPosition: 1,
   folders: [],
   playlists: [],
@@ -103,6 +106,9 @@ const DOM = {
   btnToggleMediaView: document.getElementById('btn-toggle-media-view'),
   btnNewFolder: document.getElementById('btn-new-folder'),
   btnAddLink: document.getElementById('btn-add-link'),
+  btnSelectMode: document.getElementById('btn-select-mode'),
+  btnSelectAll: document.getElementById('btn-select-all'),
+  btnDeleteSelected: document.getElementById('btn-delete-selected'),
   btnMoveFolder: document.getElementById('btn-move-folder'),
   previewModal: document.getElementById('preview-modal'),
   previewImage: document.getElementById('preview-image'),
@@ -568,6 +574,7 @@ function updateMediaNode(node, clip, activeClipId, status) {
   loopButton.classList.toggle('active-loop', Boolean(clip.loop_enabled));
   node.classList.toggle('active', clip.deck_id === activeClipId);
   node.classList.toggle('selected', clip.deck_id === state.selectedClipId);
+  node.classList.toggle('multi-selected', state.selection.has(clip.filename));
   node.classList.toggle('processing', ['pending', 'processing'].includes(clip.processing_state));
   node.classList.toggle('processing-error', clip.processing_state === 'error');
   node.classList.toggle('offline', isOffline);
@@ -1415,8 +1422,10 @@ function syncMediaGridVisualState(activeClipId = state.snapshot?.transport?.clip
   DOM.mediaGrid.querySelectorAll('.media-item').forEach((node) => {
     const isActive = node.dataset.deckId === String(activeClipId || '');
     const isSelected = node.dataset.deckId === selectedClipId;
+    const clip = clipFromDeckId(node.dataset.deckId);
     node.classList.toggle('active', isActive);
     node.classList.toggle('selected', isSelected);
+    node.classList.toggle('multi-selected', Boolean(clip && state.selection.has(clip.filename)));
     const overlay = node.querySelector('.status-overlay');
     if (overlay) {
       overlay.style.display = isActive && status === 'play' ? 'flex' : 'none';
@@ -1831,6 +1840,23 @@ function renderMediaToolbar() {
   DOM.btnToggleMediaView.hidden = isFolderOverview;
   DOM.btnToggleMediaView.textContent = state.mediaView === 'grid' ? 'LIST' : 'GRID';
   DOM.btnToggleMediaView.classList.toggle('active', state.mediaView === 'list');
+
+  // Bulk-select controls are hidden on the folder overview (no clips shown).
+  DOM.btnSelectMode.hidden = isFolderOverview;
+  DOM.btnSelectMode.textContent = state.selectMode ? 'CANCEL' : 'SELECT';
+  DOM.btnSelectMode.classList.toggle('active', state.selectMode);
+  DOM.btnSelectAll.hidden = isFolderOverview || !state.selectMode;
+  const count = state.selection.size;
+  DOM.btnDeleteSelected.hidden = isFolderOverview || !state.selectMode;
+  DOM.btnDeleteSelected.textContent = count ? `DELETE (${count})` : 'DELETE';
+  DOM.btnDeleteSelected.disabled = count === 0;
+}
+
+function exitSelectMode() {
+  state.selectMode = false;
+  state.selection.clear();
+  renderMediaToolbar();
+  syncMediaGridVisualState();
 }
 
 function renderPlaylists() {
@@ -2393,6 +2419,15 @@ bindAsync(DOM.mediaGrid, 'click', async (event) => {
   const controlButton = event.target.closest('.ctrl-btn');
   const clip = clipFromDeckId(mediaItem.dataset.deckId);
   if (!clip) return;
+  if (state.selectMode) {
+    // In bulk mode a click toggles the clip in/out of the selection.
+    event.stopPropagation();
+    if (state.selection.has(clip.filename)) state.selection.delete(clip.filename);
+    else state.selection.add(clip.filename);
+    syncMediaGridVisualState();
+    renderMediaToolbar();
+    return;
+  }
   if (controlButton) {
     event.stopPropagation();
     await handleClipAction(clip, controlButton.dataset.action);
@@ -2404,6 +2439,7 @@ bindAsync(DOM.mediaGrid, 'click', async (event) => {
   renderPreview();
 }, 'Media Error');
 bindAsync(DOM.mediaGrid, 'dblclick', async (event) => {
+  if (state.selectMode) return;
   if (event.target.closest('.ctrl-btn') || event.target.closest('.folder-card')) return;
   const mediaItem = event.target.closest('.media-item');
   if (!mediaItem) return;
@@ -2486,6 +2522,41 @@ bindAsync(DOM.btnAddLink, 'click', async () => {
   await refresh();
   DOM.dropzone.scrollTop = 0;
 }, 'Link Error');
+DOM.btnSelectMode.addEventListener('click', () => {
+  if (state.selectMode) {
+    exitSelectMode();
+  } else {
+    state.selectMode = true;
+    state.selection.clear();
+    renderMediaToolbar();
+    syncMediaGridVisualState();
+  }
+});
+DOM.btnSelectAll.addEventListener('click', () => {
+  const visible = filteredClips();
+  const allSelected = visible.length > 0 && visible.every((clip) => state.selection.has(clip.filename));
+  if (allSelected) {
+    visible.forEach((clip) => state.selection.delete(clip.filename));
+  } else {
+    visible.forEach((clip) => state.selection.add(clip.filename));
+  }
+  renderMediaToolbar();
+  syncMediaGridVisualState();
+});
+bindAsync(DOM.btnDeleteSelected, 'click', async () => {
+  const filenames = [...state.selection];
+  if (!filenames.length) return;
+  const confirmed = await requestConfirm({
+    title: 'Delete clips',
+    message: `Permanently delete ${filenames.length} selected clip(s)? Files on a connected disk are removed; entries for offline drives and links are removed from the library.`,
+    confirmLabel: 'DELETE',
+  });
+  if (!confirmed) return;
+  const result = await api('/api/clips/delete', { method: 'POST', body: JSON.stringify({ filenames }) });
+  exitSelectMode();
+  await refresh();
+  await showNotice('Clips Deleted', `Removed ${result.deleted} clip(s).`);
+}, 'Delete Error');
 bindAsync(DOM.btnNewFolder, 'click', async () => {
   const name = await requestText({
     title: 'New Folder',

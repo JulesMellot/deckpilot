@@ -1767,6 +1767,11 @@ function renderState(snapshot) {
   pruneNodeCache(state.mediaNodeCache, new Set((snapshot.clips || []).map((clip) => String(clip.deck_id))));
   pruneNodeCache(state.folderNodeCache, new Set((snapshot.folders || []).filter((folder) => folder !== 'All')));
   normalizeSelection();
+  // Keep the IMPORT file picker in sync with the configured extensions, so a
+  // format added in Settings (e.g. .webm) becomes selectable without a reload.
+  if (Array.isArray(snapshot.allowed_extensions) && snapshot.allowed_extensions.length) {
+    DOM.fileInput.accept = snapshot.allowed_extensions.join(',');
+  }
   const { transport, clips, connections, logs, audio, outputs, network, health, safety, display } = snapshot;
   if (snapshot.app_name) {
     DOM.appName.textContent = String(snapshot.app_name).toUpperCase();
@@ -2119,6 +2124,8 @@ async function uploadFiles(fileList) {
   if (!fileList || !fileList.length) return;
   const formData = new FormData();
   [...fileList].forEach((file) => formData.append('files', file));
+  // Drop the upload into the folder currently in view (server ignores All / Library).
+  formData.append('folder', currentFolder());
   state.uploadProcessingActive = true;
   if (state.uploadHideTimer) {
     clearTimeout(state.uploadHideTimer);

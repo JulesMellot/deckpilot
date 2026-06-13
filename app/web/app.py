@@ -7,7 +7,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -461,8 +461,9 @@ def build_app(
         return {'ok': True, 'safety': state.safety_snapshot()}
 
     @app.post('/api/upload')
-    async def upload(files: list[UploadFile] = File(...)) -> dict[str, Any]:
+    async def upload(files: list[UploadFile] = File(...), folder: str = Form('')) -> dict[str, Any]:
         try:
+            names = []
             for item in files:
                 suffix = Path(item.filename or '').suffix.lower()
                 if suffix not in controller.config.allowed_upload_extensions:
@@ -471,7 +472,12 @@ def build_app(
                         status_code=400,
                         detail=f'Unsupported file type: {suffix or "(none)"} — allowed: {allowed}',
                     )
+                names.append(Path(item.filename or '').name)
             await clip_store.save_upload_streams(files)
+            # Land the upload in the folder the operator is viewing, not the
+            # default 'Library' bucket, so it shows up where they dropped it.
+            if folder and folder not in ('All', 'Library'):
+                await clip_store.set_folder_by_filenames(names, folder)
             await controller.refresh_clips()
             return {
                 'uploaded': len(files),

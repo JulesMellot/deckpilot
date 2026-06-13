@@ -33,7 +33,7 @@ class AppConfig:
     audio_device: str = "auto"
     ws_tick_seconds: float = 1.0
     log_buffer_size: int = 200
-    allowed_upload_extensions: list[str] = field(default_factory=lambda: [".mp4", ".mov", ".mkv", ".jpg", ".jpeg", ".png", ".webp", ".gif"])
+    allowed_upload_extensions: list[str] = field(default_factory=lambda: [".mp4", ".mov", ".mkv", ".webm", ".jpg", ".jpeg", ".png", ".webp", ".gif"])
     # Capped at 2 by default: a playout deck must keep headroom for mpv even
     # during a large import (override with PIDECK_MEDIA_ENRICHMENT_WORKERS).
     media_enrichment_workers: int = field(default_factory=lambda: max(1, min(2, os.cpu_count() or 2)))

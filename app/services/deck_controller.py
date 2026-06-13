@@ -860,6 +860,7 @@ class DeckController:
             'health': await self.health_snapshot(),
             'safety': self.state.safety_snapshot(),
             'app_name': self.config.app_name,
+            'allowed_extensions': list(self.config.allowed_upload_extensions),
         }
 
     async def _current_playlist_end_behavior(self) -> str:

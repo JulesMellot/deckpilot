@@ -143,6 +143,25 @@ class ClipStoreThumbnailTests(unittest.TestCase):
             self.store._sync_with_disk_sync()
         self.assertEqual(len(self.store._list_clips_sync()), 1)
 
+    def test_set_folder_by_filenames_places_uploads_in_current_folder(self) -> None:
+        for name in ('intro.mp4', 'demo.webm'):
+            (Path(self.config.clips_dir) / name).write_bytes(b'x')
+        with patch('app.media.clip_store.removable_media_roots', return_value=[]):
+            self.store._sync_with_disk_sync()
+        self.store._set_folder_by_filenames_sync(['intro.mp4', 'demo.webm'], 'Events')
+        folders = {c.filename: c.folder for c in self.store._list_clips_sync()}
+        self.assertEqual(folders['intro.mp4'], 'Events')
+        self.assertEqual(folders['demo.webm'], 'Events')
+        self.assertIn('Events', self.store._list_folders_sync())
+
+    def test_set_folder_by_filenames_ignores_default_bucket(self) -> None:
+        (Path(self.config.clips_dir) / 'a.mp4').write_bytes(b'x')
+        with patch('app.media.clip_store.removable_media_roots', return_value=[]):
+            self.store._sync_with_disk_sync()
+        self.store._set_folder_by_filenames_sync(['a.mp4'], 'All')
+        self.store._set_folder_by_filenames_sync(['a.mp4'], 'Library')
+        self.assertEqual(self.store._list_clips_sync()[0].folder, 'Library')
+
     def test_bulk_delete_by_filename_removes_only_named_clips(self) -> None:
         for name in ('a.mp4', 'b.mp4', 'c.mp4'):
             (Path(self.config.clips_dir) / name).write_bytes(b'x')

@@ -979,6 +979,26 @@ class ClipStore:
         await asyncio.to_thread(self._set_folder_sync, deck_id, folder)
         return await self.get_clip(deck_id)
 
+    async def set_folder_by_filenames(self, filenames: list[str], folder: str) -> None:
+        await asyncio.to_thread(self._set_folder_by_filenames_sync, filenames, folder)
+
+    def _set_folder_by_filenames_sync(self, filenames: list[str], folder: str) -> None:
+        folder = (folder or '').strip()
+        names = [name for name in dict.fromkeys(filenames) if name]
+        # 'Library'/blank is the default bucket and 'All' is the virtual
+        # show-everything filter, never a real folder — nothing to reassign.
+        if not folder or folder in ('Library', 'All') or not names:
+            return
+        with self._connect() as conn:
+            conn.execute('INSERT OR IGNORE INTO media_folders (name) VALUES (?)', (folder,))
+            placeholders = ','.join('?' * len(names))
+            conn.execute(
+                f'UPDATE clips SET folder = ? WHERE filename IN ({placeholders})',
+                [folder, *names],
+            )
+            conn.commit()
+        self._invalidate_clips_cache()
+
     def _set_folder_sync(self, deck_id: int, folder: str) -> None:
         folder = (folder or 'Library').strip() or 'Library'
         with self._connect() as conn:

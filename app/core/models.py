@@ -28,6 +28,15 @@ class ClipRecord:
     mark_out_seconds: float = 0.0
     tags: str = ""
     has_audio_levels: bool = False
+    # Which disk the file lives on ("Internal" or a USB drive's label), and
+    # whether that disk is currently connected. Offline clips stay in the
+    # library (metadata preserved) but cannot be fired until the drive returns.
+    source: str = "Internal"
+    available: bool = True
+    # A network link (http/rtsp/...) played straight from mpv rather than a
+    # file on disk. Remote clips have no /media preview and are never swept by
+    # the disk sync.
+    is_remote: bool = False
 
     def trim_bounds(self) -> tuple[float, float]:
         """Return the effective (in, out) playback window in absolute seconds.

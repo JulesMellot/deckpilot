@@ -83,6 +83,76 @@ class ClipStoreThumbnailTests(unittest.TestCase):
         self.assertEqual(clips[0].media_kind, 'video')
         self.assertEqual(clips[0].processing_state, 'pending')
 
+    def test_sync_ingests_usb_clips_and_marks_them_offline_when_unplugged(self) -> None:
+        usb_dir = Path(self.temp_dir.name) / 'usb'
+        usb_dir.mkdir()
+        internal_clip = Path(self.config.clips_dir) / 'house.mp4'
+        usb_clip = usb_dir / 'field.mp4'
+        internal_clip.write_bytes(b'a')
+        usb_clip.write_bytes(b'b')
+
+        with patch('app.media.clip_store.removable_media_roots', return_value=[str(usb_dir)]):
+            self.store._sync_with_disk_sync()
+            clips = {c.filename: c for c in self.store._list_clips_sync()}
+
+        self.assertEqual(set(clips), {'house.mp4', 'field.mp4'})
+        self.assertEqual(clips['house.mp4'].source, 'Internal')
+        self.assertTrue(clips['house.mp4'].available)
+        self.assertEqual(clips['field.mp4'].source, 'usb')
+        self.assertTrue(clips['field.mp4'].available)
+        self.assertEqual(clips['field.mp4'].filepath, str(usb_clip))
+
+        # Unplug the drive: the USB clip stays in the library but goes offline,
+        # while the internal clip is untouched.
+        with patch('app.media.clip_store.removable_media_roots', return_value=[]):
+            self.store._sync_with_disk_sync()
+            clips = {c.filename: c for c in self.store._list_clips_sync()}
+
+        self.assertEqual(set(clips), {'house.mp4', 'field.mp4'})
+        self.assertFalse(clips['field.mp4'].available)
+        self.assertTrue(clips['house.mp4'].available)
+
+    def test_sync_deletes_clip_removed_from_a_connected_disk(self) -> None:
+        internal_clip = Path(self.config.clips_dir) / 'gone.mp4'
+        internal_clip.write_bytes(b'a')
+        with patch('app.media.clip_store.removable_media_roots', return_value=[]):
+            self.store._sync_with_disk_sync()
+            self.assertEqual(len(self.store._list_clips_sync()), 1)
+            internal_clip.unlink()
+            self.store._sync_with_disk_sync()
+            self.assertEqual(len(self.store._list_clips_sync()), 0)
+
+    def test_remote_clip_is_inserted_as_link_source(self) -> None:
+        key, url = self.store._insert_remote_clip_sync('https://cdn.example.com/live/stream.m3u8', None)
+        clips = self.store._list_clips_sync()
+        self.assertEqual(len(clips), 1)
+        clip = clips[0]
+        self.assertTrue(clip.is_remote)
+        self.assertEqual(clip.source, 'Link')
+        self.assertTrue(clip.available)
+        self.assertEqual(clip.filepath, url)
+        self.assertEqual(clip.name, 'stream.m3u8')
+
+    def test_remote_clip_rejects_non_url_and_duplicates(self) -> None:
+        with self.assertRaises(ValueError):
+            self.store._insert_remote_clip_sync('/home/pi/clip.mp4', None)
+        self.store._insert_remote_clip_sync('rtsp://cam.local/stream', 'Lobby Cam')
+        with self.assertRaises(ValueError):
+            self.store._insert_remote_clip_sync('rtsp://cam.local/stream', 'Lobby Cam')
+
+    def test_disk_sync_never_deletes_remote_clips(self) -> None:
+        self.store._insert_remote_clip_sync('https://cdn.example.com/vod.mp4', None)
+        with patch('app.media.clip_store.removable_media_roots', return_value=[]):
+            # A disk sync with no matching file on disk must keep the link.
+            self.store._sync_with_disk_sync()
+        clips = self.store._list_clips_sync()
+        self.assertEqual(len(clips), 1)
+        self.assertTrue(clips[0].is_remote)
+
+    def test_remote_clip_is_not_served_over_media(self) -> None:
+        key, _ = self.store._insert_remote_clip_sync('https://cdn.example.com/vod.mp4', None)
+        self.assertIsNone(self.store._path_for_filename_sync(key))
+
     def test_sync_detects_image_placeholder_kind(self) -> None:
         clip = Path(self.config.clips_dir) / 'still.jpg'
         clip.write_bytes(b'image-data')

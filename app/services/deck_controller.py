@@ -15,6 +15,7 @@ from app.player.mpv_controller import MPVController
 from app.services.network_info import NetworkInfoService
 from app.services.output_manager import OutputManager
 from app.services.standby_slate import StandbySlateService
+from app.services.storage_devices import list_storage_devices
 from app.services.system_vitals import read_system_vitals
 
 # Forward-only speed window. Reverse playback is intentionally unsupported: mpv
@@ -113,6 +114,11 @@ class DeckController:
         await self.playlist_store.sync_active_playlist_from_clips()
         await self._publish_media_state()
 
+    async def add_remote_clip(self, url: str, name: str | None = None) -> str:
+        key = await self.clip_store.add_remote_clip(url, name)
+        await self._publish_media_state()
+        return key
+
     async def schedule_media_refresh_publish(self) -> None:
         if self._media_publish_task and not self._media_publish_task.done():
             return
@@ -163,6 +169,10 @@ class DeckController:
             return False
         if not clip.filepath:
             await self._report_error('playback', f'Cannot cue clip "{clip.name}": missing file path.')
+            await self._publish_health()
+            return False
+        if not getattr(clip, 'available', True):
+            await self._report_error('playback', f'Cannot cue "{clip.name}": its drive ({clip.source}) is not connected.')
             await self._publish_health()
             return False
         if not await self._ensure_player_ready():
@@ -225,6 +235,10 @@ class DeckController:
             return False
         if not clip.filepath:
             await self._report_error('playback', f'Cannot play clip "{clip.name}": missing file path.')
+            await self._publish_health()
+            return False
+        if not getattr(clip, 'available', True):
+            await self._report_error('playback', f'Cannot play "{clip.name}": its drive ({clip.source}) is not connected.')
             await self._publish_health()
             return False
         use_loop = clip.loop_enabled if loop is None else loop
@@ -726,6 +740,18 @@ class DeckController:
         await self.state.publish('audio', self.audio_snapshot())
         await self._publish_health()
 
+    async def list_storage_devices(self) -> Dict[str, Any]:
+        devices = await asyncio.to_thread(list_storage_devices, self.config.clips_dir)
+        return {
+            'devices': [device.to_dict() for device in devices],
+            'internal_path': self.config.clips_dir,
+        }
+
+    async def rescan_media(self) -> Dict[str, Any]:
+        """Re-scan every connected disk now (e.g. after plugging in a drive)."""
+        await self.refresh_clips()
+        return await self.list_storage_devices()
+
     async def slot_snapshot(self) -> Dict[str, Any]:
         clips = await self.clip_store.list_clips()
         return {
@@ -745,7 +771,9 @@ class DeckController:
         free_bytes = 0
         total_bytes = 0
         try:
-            usage = shutil.disk_usage(self.config.data_dir)
+            # The clip library is what actually fills up, so report its disk —
+            # which may now be a USB drive rather than the SD card.
+            usage = shutil.disk_usage(self.config.clips_dir)
             free_bytes = usage.free
             total_bytes = usage.total
         except OSError:

@@ -7,17 +7,20 @@ import time
 from typing import Any, Dict, Tuple
 
 from app.core.config import AppConfig
+from app.services.storage_devices import removable_media_roots
 
 Snapshot = Dict[str, Tuple[int, int]]
 
 
 class WatchFolderService:
-    """Light periodic scanner for the clips directory.
+    """Light periodic scanner for the clip sources.
 
-    Files dropped over SMB / USB are picked up automatically: a file is only
-    ingested once its size and mtime are identical across two consecutive
-    scans, so half-copied files never enter the library. One os.scandir every
-    few seconds is the entire steady-state cost.
+    Scans the internal clips directory plus any connected USB drive, so a drive
+    plugged in after boot is picked up on the next tick. Files dropped over
+    SMB / USB are ingested only once their size and mtime are identical across
+    two consecutive scans, so half-copied files never enter the library. A
+    drive appearing or disappearing also shows up as a snapshot change, which
+    triggers a refresh that flips its clips online / offline.
     """
 
     def __init__(self, config: AppConfig, state, controller) -> None:
@@ -84,25 +87,41 @@ class WatchFolderService:
             self.last_ingest_at = time.time()
             self.ingest_count += 1
         if added:
-            await self.state.add_log('info', 'media', f'Watch folder: ingesting {len(added)} new file(s): {", ".join(sorted(added)[:5])}')
+            names = sorted(os.path.basename(path) for path in added)
+            await self.state.add_log('info', 'media', f'Watch folder: ingesting {len(added)} new file(s): {", ".join(names[:5])}')
         if removed:
             await self.state.add_log('info', 'media', f'Watch folder: {len(removed)} file(s) removed from disk.')
         await self.controller.refresh_clips()
         return True
 
+    def _source_roots(self) -> list[str]:
+        roots = [self.config.clips_dir]
+        for mount in removable_media_roots():
+            if mount not in roots:
+                roots.append(mount)
+        return roots
+
     def _scan(self) -> Snapshot:
         snapshot: Snapshot = {}
         allowed = set(self.config.allowed_upload_extensions)
-        try:
-            with os.scandir(self.config.clips_dir) as entries:
-                for entry in entries:
-                    if not entry.is_file():
-                        continue
-                    suffix = os.path.splitext(entry.name)[1].lower()
-                    if suffix not in allowed:
-                        continue
-                    stats = entry.stat()
-                    snapshot[entry.name] = (stats.st_size, stats.st_mtime_ns)
-        except OSError:
+        scanned_any = False
+        for root in self._source_roots():
+            try:
+                with os.scandir(root) as entries:
+                    scanned_any = True
+                    for entry in entries:
+                        if not entry.is_file():
+                            continue
+                        suffix = os.path.splitext(entry.name)[1].lower()
+                        if suffix not in allowed:
+                            continue
+                        stats = entry.stat()
+                        # Key by full path so identically-named files on
+                        # different drives don't shadow one another.
+                        snapshot[entry.path] = (stats.st_size, stats.st_mtime_ns)
+            except OSError:
+                # A single unreadable / vanished root must not blank the scan.
+                continue
+        if not scanned_any:
             return self._last_scan or {}
         return snapshot

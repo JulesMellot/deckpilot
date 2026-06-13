@@ -102,6 +102,7 @@ const DOM = {
   btnBackAll: document.getElementById('btn-back-all'),
   btnToggleMediaView: document.getElementById('btn-toggle-media-view'),
   btnNewFolder: document.getElementById('btn-new-folder'),
+  btnAddLink: document.getElementById('btn-add-link'),
   btnMoveFolder: document.getElementById('btn-move-folder'),
   previewModal: document.getElementById('preview-modal'),
   previewImage: document.getElementById('preview-image'),
@@ -146,6 +147,8 @@ const DOM = {
   configOutput: document.getElementById('config-output'),
   configCanvas: document.getElementById('config-canvas'),
   configAudio: document.getElementById('config-audio'),
+  storageDeviceList: document.getElementById('storage-device-list'),
+  btnRescanStorage: document.getElementById('btn-rescan-storage'),
   healthPlayer: document.getElementById('health-player'),
   healthOutput: document.getElementById('health-output'),
   healthStorage: document.getElementById('health-storage'),
@@ -520,8 +523,12 @@ function updateMediaNode(node, clip, activeClipId, status) {
   const loopButton = node.querySelector('.ctrl-btn.loop');
   const statusOverlay = node.querySelector('.status-overlay');
   const processingLabel = clipProcessingLabel(clip);
+  const isOffline = clip.available === false;
   const playbackActive = clip.deck_id === activeClipId && status === 'play';
-  const overlayLabel = playbackActive ? 'PLAYING' : processingLabel;
+  const overlayLabel = playbackActive ? 'PLAYING' : (isOffline ? 'OFFLINE' : processingLabel);
+  const sourceLabel = isOffline
+    ? 'OFFLINE'
+    : (clip.is_remote ? 'LINK' : (clip.source && clip.source !== 'Internal' ? `USB · ${clip.source}` : null));
   const metaParts = [
     clip.folder,
     mediaKindLabel(clip),
@@ -530,6 +537,7 @@ function updateMediaNode(node, clip, activeClipId, status) {
     clip.media_kind === 'video' ? `${clip.framerate}fps` : null,
     clip.is_vertical ? 'vertical' : null,
     clip.tags ? `#${clip.tags}` : null,
+    sourceLabel,
     processingLabel || null,
   ].filter(Boolean);
 
@@ -562,9 +570,11 @@ function updateMediaNode(node, clip, activeClipId, status) {
   node.classList.toggle('selected', clip.deck_id === state.selectedClipId);
   node.classList.toggle('processing', ['pending', 'processing'].includes(clip.processing_state));
   node.classList.toggle('processing-error', clip.processing_state === 'error');
+  node.classList.toggle('offline', isOffline);
   statusOverlay.textContent = overlayLabel || 'PLAYING';
-  statusOverlay.classList.toggle('processing', !playbackActive && ['pending', 'processing'].includes(clip.processing_state));
+  statusOverlay.classList.toggle('processing', !playbackActive && !isOffline && ['pending', 'processing'].includes(clip.processing_state));
   statusOverlay.classList.toggle('error', clip.processing_state === 'error');
+  statusOverlay.classList.toggle('offline', !playbackActive && isOffline);
   statusOverlay.style.display = overlayLabel ? 'flex' : 'none';
 }
 
@@ -889,7 +899,8 @@ function filteredClips() {
     if (folder !== 'All' && clip.folder !== folder) return false;
     if (mediaType !== 'all' && clip.media_kind !== mediaType) return false;
     if (!searchTerm) return true;
-    const haystack = `${clip.name} ${clip.filename} ${clip.folder} ${clip.codec} ${clip.media_kind} ${clip.tags || ''}`.toLowerCase();
+    const sourceTokens = clip.available === false ? `${clip.source || ''} offline usb` : (clip.source || '');
+    const haystack = `${clip.name} ${clip.filename} ${clip.folder} ${clip.codec} ${clip.media_kind} ${clip.tags || ''} ${sourceTokens}`.toLowerCase();
     return haystack.includes(searchTerm);
   });
 }
@@ -1014,6 +1025,7 @@ function openSettingsModal() {
   DOM.settingsModal.hidden = false;
   void loadConfigEditor().catch((error) => console.error(error));
   void loadAudioDevices().catch((error) => console.error(error));
+  void loadStorageDevices().catch((error) => console.error(error));
 }
 
 async function loadAudioDevices() {
@@ -1031,6 +1043,37 @@ function renderAudioDevices(devices) {
     fragment.appendChild(option);
   });
   DOM.configAudio.replaceChildren(fragment);
+}
+
+async function loadStorageDevices() {
+  const payload = await api('/api/system/storage-devices');
+  renderStorageDevices(payload.devices || []);
+}
+
+function renderStorageDevices(devices) {
+  state.storageDevices = devices;
+  const fragment = document.createDocumentFragment();
+  devices.forEach((device) => {
+    const row = document.createElement('div');
+    row.className = `storage-device${device.is_internal ? ' is-internal' : ''}`;
+    const name = document.createElement('span');
+    name.className = 'storage-device-name';
+    name.textContent = device.is_internal ? 'Internal (SD card)' : `USB · ${device.label}`;
+    const free = document.createElement('span');
+    free.className = 'storage-device-free';
+    const total = Number(device.total_bytes || 0);
+    const percent = total > 0 ? ` (${Math.round((device.free_bytes / total) * 100)}%)` : '';
+    free.textContent = `${formatBytes(device.free_bytes)} free / ${formatBytes(total)}${percent}`;
+    row.append(name, free);
+    fragment.appendChild(row);
+  });
+  if (!devices.length) {
+    const row = document.createElement('div');
+    row.className = 'storage-device';
+    row.textContent = 'No drives detected — plug in a USB drive and press RESCAN.';
+    fragment.appendChild(row);
+  }
+  DOM.storageDeviceList.replaceChildren(fragment);
 }
 
 async function loadConfigEditor() {
@@ -1491,7 +1534,16 @@ function renderHealth(health, safety) {
   DOM.healthOutput.textContent = health.effective_output_width && health.effective_output_height
     ? `${health.effective_output_width}x${health.effective_output_height}`
     : (health.selected_output?.current_mode || health.selected_output?.label || 'DEFAULT');
-  DOM.healthStorage.textContent = formatBytes(health.storage_free_bytes);
+  const freeBytes = Number(health.storage_free_bytes || 0);
+  const totalBytes = Number(health.storage_total_bytes || 0);
+  if (totalBytes > 0) {
+    const freePercent = Math.round((freeBytes / totalBytes) * 100);
+    DOM.healthStorage.textContent = `${formatBytes(freeBytes)} / ${formatBytes(totalBytes)} (${freePercent}%)`;
+    DOM.healthStorage.classList.toggle('is-low', freePercent <= 10);
+  } else {
+    DOM.healthStorage.textContent = formatBytes(freeBytes);
+    DOM.healthStorage.classList.remove('is-low');
+  }
   DOM.healthRemote.textContent = health.remote_enabled ? 'ENABLED' : 'DISABLED';
 
   const lines = [
@@ -1850,6 +1902,25 @@ function renderPreview() {
   DOM.previewStillDuration.hidden = !isImage;
   if (isImage && document.activeElement !== DOM.previewDurationInput) {
     DOM.previewDurationInput.value = String(Math.round((clip.duration_seconds || 10) * 10) / 10);
+  }
+  if (clip.is_remote) {
+    // The browser cannot reliably stream the link (CORS / HLS); it plays on the
+    // program output instead. Show the captured thumbnail, or a placeholder.
+    DOM.previewVideo.pause();
+    DOM.previewVideo.removeAttribute('src');
+    DOM.previewVideo.load();
+    DOM.previewVideo.hidden = true;
+    DOM.previewMarks.hidden = true;
+    const artwork = mediaArtworkUrl(clip);
+    DOM.previewImage.hidden = !artwork;
+    if (artwork) {
+      DOM.previewImage.alt = clip.name;
+      if (DOM.previewImage.getAttribute('src') !== artwork) DOM.previewImage.src = artwork;
+    } else {
+      DOM.previewImage.removeAttribute('src');
+    }
+    DOM.previewSubtitle.textContent = `${subtitleParts.join(' | ')} | NETWORK LINK — plays on program output`;
+    return;
   }
   const nextSrc = mediaSourceUrl(clip);
   if (clip.media_kind === 'image') {
@@ -2229,6 +2300,14 @@ bindAsync(DOM.configAudio, 'change', async (e) => {
     renderAudioDevices(response.devices);
   }
 }, 'Audio Error');
+bindAsync(DOM.btnRescanStorage, 'click', async () => {
+  const result = await api('/api/system/storage-rescan', { method: 'POST' });
+  renderStorageDevices(result.devices || []);
+  const usbCount = (result.devices || []).filter((device) => !device.is_internal).length;
+  await showNotice('Media Storage', usbCount
+    ? `Rescanned — ${usbCount} USB drive(s) connected. New clips appear in the library.`
+    : 'Rescanned — no USB drive connected. Clips on the SD card are shown.');
+}, 'Media Storage Error');
 DOM.configVolume.addEventListener('input', (e) => {
   scheduleVolumeCommit(Number(e.target.value));
 });
@@ -2396,6 +2475,17 @@ DOM.btnBackAll.addEventListener('click', () => {
 DOM.btnToggleMediaView.addEventListener('click', () => {
   setMediaView(state.mediaView === 'grid' ? 'list' : 'grid');
 });
+bindAsync(DOM.btnAddLink, 'click', async () => {
+  const url = await requestText({
+    title: 'Add Network Link',
+    message: 'Stream / video URL (http, https, rtsp, rtmp, hls…):',
+    confirmLabel: 'ADD'
+  });
+  if (!url) return;
+  await api('/api/clips/url', { method: 'POST', body: JSON.stringify({ url }) });
+  await refresh();
+  DOM.dropzone.scrollTop = 0;
+}, 'Link Error');
 bindAsync(DOM.btnNewFolder, 'click', async () => {
   const name = await requestText({
     title: 'New Folder',

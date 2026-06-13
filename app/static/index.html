@@ -190,6 +190,10 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
             IMPORT
           </button>
+          <button id="btn-add-link" class="action-btn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+            ADD LINK
+          </button>
           <button id="btn-refresh-media" class="action-btn">
              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>
           </button>
@@ -420,6 +424,14 @@
         <div class="form-row">
           <label>AUDIO OUTPUT</label>
           <select id="config-audio" class="select-box"></select>
+        </div>
+        <div class="form-row settings-update-row">
+          <label>MEDIA STORAGE</label>
+          <div class="settings-update-meta">Clips are read from the internal SD card <em>and</em> any USB drive — drop video files on a drive's top level and they appear in the library. Metadata (names, marks, playlists) always lives on the SD card, so a drive can come and go safely.</div>
+          <div class="storage-device-list" id="storage-device-list"></div>
+          <div class="settings-maintenance-actions">
+            <button id="btn-rescan-storage" class="action-btn" type="button">RESCAN DRIVES</button>
+          </div>
         </div>
         <div class="form-row settings-update-row">
           <label>SYSTEM UPDATE</label>

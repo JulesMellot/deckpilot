@@ -122,6 +122,11 @@ class AudioDeviceRequest(BaseModel):
     device: str
 
 
+class RemoteClipRequest(BaseModel):
+    url: str
+    name: str | None = None
+
+
 class FolderRequest(BaseModel):
     folder: str
 
@@ -179,7 +184,6 @@ def build_app(
 
     static_dir = Path(__file__).resolve().parent.parent / 'static'
     app.mount('/static', StaticFiles(directory=static_dir), name='static')
-    app.mount('/media', StaticFiles(directory=controller.config.clips_dir), name='media')
 
     @app.middleware('http')
     async def immutable_asset_cache(request, call_next):
@@ -205,6 +209,16 @@ def build_app(
         for asset in ('styles.css', 'app.js'):
             html = html.replace(f'/static/{asset}', f'/static/{asset}?v={_asset_version(asset)}')
         return HTMLResponse(html, headers={'Cache-Control': 'no-cache'})
+
+    @app.get('/media/{filename}')
+    async def get_media(filename: str) -> FileResponse:
+        # Resolve by known clip rather than serving a directory: a clip may live
+        # on the SD card or a USB drive, and only registered files are exposed.
+        safe_name = Path(filename).name
+        filepath = await clip_store.path_for_filename(safe_name)
+        if not filepath or not Path(filepath).is_file():
+            raise HTTPException(status_code=404, detail='Media not found')
+        return FileResponse(filepath)
 
     @app.get('/thumbs/{thumb_name}')
     async def get_thumbnail(thumb_name: str) -> FileResponse:
@@ -318,6 +332,14 @@ def build_app(
     @app.get('/api/system/audio-devices')
     async def get_audio_devices() -> dict[str, Any]:
         return {'devices': await controller.list_audio_devices()}
+
+    @app.get('/api/system/storage-devices')
+    async def get_storage_devices() -> dict[str, Any]:
+        return await controller.list_storage_devices()
+
+    @app.post('/api/system/storage-rescan')
+    async def rescan_storage() -> dict[str, Any]:
+        return {'ok': True, **await controller.rescan_media()}
 
     @app.get('/api/system/update')
     async def get_update_status() -> dict[str, Any]:
@@ -455,6 +477,15 @@ def build_app(
         finally:
             for item in files:
                 await item.close()
+
+    @app.post('/api/clips/url')
+    async def add_clip_url(payload: RemoteClipRequest) -> dict[str, Any]:
+        try:
+            key = await controller.add_remote_clip(payload.url, payload.name)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        await state.add_log('info', 'media', f'Added network link: {payload.url}')
+        return {'ok': True, 'clip': key}
 
     @app.post('/api/clips/{deck_id}/goto')
     async def goto_clip(deck_id: int) -> dict[str, Any]:

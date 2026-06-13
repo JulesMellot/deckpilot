@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import hashlib
 import json
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -11,11 +12,26 @@ import time
 from pathlib import Path
 from threading import Lock
 from typing import Any, Awaitable, Callable, Iterable, List
+from urllib.parse import urlparse
 
 from app.core.config import AppConfig
 from app.core.models import ClipRecord
+from app.services.storage_devices import removable_media_roots
 
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
+# URL schemes mpv can open directly via loadfile. Anything else (a bare path,
+# file://, javascript:, ...) is rejected when adding a network clip.
+REMOTE_URL_SCHEMES = {
+    'http', 'https', 'rtsp', 'rtsps', 'rtmp', 'rtmps', 'rtp', 'udp', 'srt',
+    'mms', 'mmsh', 'hls', 'ftp', 'ftps', 'tcp',
+}
+
+
+def _path_under(root: str, path: str) -> bool:
+    """True if ``path`` lives inside (or is) the directory ``root``."""
+    root = os.path.normpath(root)
+    path = os.path.normpath(path)
+    return path == root or path.startswith(root + os.sep)
 
 
 class ClipStore:
@@ -30,6 +46,7 @@ class ClipStore:
         self._enrichment_worker_count = max(1, int(config.media_enrichment_workers or 1))
         self._enrichment_notify_task: asyncio.Task | None = None
         self._enrichment_notify_event = asyncio.Event()
+        self._remote_enrichment_tasks: set[asyncio.Task] = set()
         self._enrichment_callback: Callable[[], Awaitable[None]] | None = None
         self._processing_metrics_lock = Lock()
         self._processing_batch_started_at: float | None = None
@@ -112,6 +129,7 @@ class ClipStore:
                     processing_state TEXT NOT NULL DEFAULT 'ready',
                     loop_enabled INTEGER NOT NULL DEFAULT 0,
                     is_builtin INTEGER NOT NULL DEFAULT 0,
+                    is_remote INTEGER NOT NULL DEFAULT 0,
                     mark_in_seconds REAL NOT NULL DEFAULT 0,
                     mark_out_seconds REAL NOT NULL DEFAULT 0,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -156,20 +174,53 @@ class ClipStore:
                 conn.execute("ALTER TABLE clips ADD COLUMN tags TEXT NOT NULL DEFAULT ''")
             if 'audio_levels' not in columns:
                 conn.execute("ALTER TABLE clips ADD COLUMN audio_levels TEXT")
+            if 'is_remote' not in columns:
+                conn.execute("ALTER TABLE clips ADD COLUMN is_remote INTEGER NOT NULL DEFAULT 0")
             conn.execute("INSERT OR IGNORE INTO media_folders (name) VALUES ('Library')")
             conn.execute("INSERT OR IGNORE INTO media_folders (name) VALUES ('System')")
             conn.commit()
         self._invalidate_clips_cache()
+
+    def _source_roots(self) -> list[str]:
+        """Disks scanned for clips: the internal library plus any USB drives.
+
+        The internal directory is always first so that, when the same filename
+        exists on two disks, the internal copy wins the unique-filename slot.
+        """
+        roots = [str(self.clips_dir)]
+        for mount in removable_media_roots():
+            if mount not in roots:
+                roots.append(mount)
+        return roots
+
+    def _scan_source_files(self, roots: list[str]) -> list[Path]:
+        allowed = set(self.config.allowed_upload_extensions)
+        files: list[Path] = []
+        seen_names: set[str] = set()
+        for root in roots:
+            try:
+                entries = sorted(Path(root).iterdir())
+            except OSError:
+                # An unreadable / vanished mount must never abort the scan.
+                continue
+            for path in entries:
+                if not path.is_file() or path.suffix.lower() not in allowed:
+                    continue
+                # Filename is the library's unique key; the first disk to carry
+                # a given name wins, later duplicates on other disks are skipped.
+                if path.name in seen_names:
+                    continue
+                seen_names.add(path.name)
+                files.append(path)
+        return files
 
     async def sync_with_disk(self) -> None:
         pending_paths = await asyncio.to_thread(self._sync_with_disk_sync)
         await self._enqueue_enrichment_paths(pending_paths)
 
     def _sync_with_disk_sync(self) -> list[str]:
-        files = [
-            p for p in self.clips_dir.iterdir()
-            if p.is_file() and p.suffix.lower() in self.config.allowed_upload_extensions
-        ]
+        roots = self._source_roots()
+        files = self._scan_source_files(roots)
         pending_paths: list[str] = []
         with self._connect() as conn:
             existing = {row['filename']: row for row in conn.execute('SELECT * FROM clips').fetchall()}
@@ -178,9 +229,18 @@ class ClipStore:
             for file_path in files:
                 if file_path.name in existing:
                     row = existing[file_path.name]
+                    moved = os.path.normpath(row['filepath']) != os.path.normpath(str(file_path))
                     needs_meta_refresh = self._metadata_needs_refresh(row)
                     needs_thumb_refresh = self._thumbnail_needs_refresh(file_path, row['thumbnail_path'])
-                    if needs_meta_refresh or needs_thumb_refresh:
+                    if moved:
+                        # The file now lives on a different disk (e.g. the clip
+                        # was copied to a USB drive): re-point and re-probe it.
+                        conn.execute(
+                            'UPDATE clips SET filepath = ?, processing_state = ? WHERE filename = ?',
+                            (str(file_path), 'pending', file_path.name),
+                        )
+                        pending_paths.append(str(file_path))
+                    elif needs_meta_refresh or needs_thumb_refresh:
                         conn.execute(
                             'UPDATE clips SET processing_state = ? WHERE filename = ?',
                             ('pending', file_path.name),
@@ -215,9 +275,13 @@ class ClipStore:
                 )
                 pending_paths.append(str(file_path))
 
-            disk_names = {item.name for item in files}
-            for row in conn.execute('SELECT filename, thumbnail_path FROM clips WHERE is_builtin = 0').fetchall():
-                if row['filename'] not in disk_names:
+            # Delete only files that vanished from a *connected* disk. Clips on
+            # an unplugged drive are kept (shown offline) so their names, marks,
+            # folders and playlist references survive until the drive returns.
+            disk_paths = {os.path.normpath(str(item)) for item in files}
+            for row in conn.execute('SELECT filename, filepath, thumbnail_path FROM clips WHERE is_builtin = 0 AND is_remote = 0').fetchall():
+                root_connected = any(_path_under(root, row['filepath']) for root in roots)
+                if root_connected and os.path.normpath(row['filepath']) not in disk_paths:
                     if row['thumbnail_path']:
                         Path(row['thumbnail_path']).unlink(missing_ok=True)
                     conn.execute('DELETE FROM clips WHERE filename = ?', (row['filename'],))
@@ -290,7 +354,10 @@ class ClipStore:
         self._invalidate_clips_cache()
 
     def _probe_clip(self, file_path: Path) -> dict:
-        media_kind = self._media_kind_for_path(file_path)
+        return self._ffprobe_meta(str(file_path), self._media_kind_for_path(file_path))
+
+    def _ffprobe_meta(self, source: str, media_kind: str, timeout: float | None = None) -> dict:
+        """Probe a local path or a network URL (``source`` is passed verbatim)."""
         if not shutil.which(self.config.ffprobe_binary):
             return {
                 'duration_seconds': self._default_duration_for_kind(media_kind),
@@ -310,9 +377,22 @@ class ClipStore:
             'stream=codec_name,r_frame_rate,width,height:format=duration',
             '-of',
             'default=noprint_wrappers=1:nokey=0',
-            str(file_path),
+            source,
         ]
-        result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+        try:
+            result = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            # A slow / unreachable stream falls back to an open-ended source.
+            return {
+                'duration_seconds': 0.0,
+                'duration_timecode': '00:00:00:00',
+                'framerate': self.config.default_framerate,
+                'codec': 'unknown',
+                'width': 0,
+                'height': 0,
+                'media_kind': media_kind,
+                'is_vertical': False,
+            }
         duration_seconds = 0.0
         framerate = self.config.default_framerate
         codec = 'unknown'
@@ -638,14 +718,34 @@ class ClipStore:
             self._clips_cache = clips
         return clips
 
+    def _source_label_resolver(self) -> Callable[[str, bool], tuple[str, bool]]:
+        """Build a cheap (filepath, is_builtin) -> (source, available) classifier.
+
+        Reads the connected drives once so the per-clip listing stays in pure
+        string space (no filesystem stat on the hot path).
+        """
+        internal_root = os.path.normpath(str(self.clips_dir))
+        connected = {os.path.normpath(mount): Path(mount).name for mount in removable_media_roots()}
+
+        def classify(filepath: str, is_builtin: bool) -> tuple[str, bool]:
+            if is_builtin or _path_under(internal_root, filepath):
+                return 'Internal', True
+            for mount, label in connected.items():
+                if _path_under(mount, filepath):
+                    return label or 'USB', True
+            return 'USB', False  # the drive holding this clip is unplugged
+
+        return classify
+
     def _list_clips_sync(self) -> List[ClipRecord]:
+        classify = self._source_label_resolver()
         with self._connect() as conn:
             # audio_levels can be tens of KB per clip; only its presence is listed.
             rows = conn.execute(
                 '''
                 SELECT id, sort_order, name, folder, filename, filepath, duration_seconds,
                        duration_timecode, framerate, codec, width, height, media_kind,
-                       is_vertical, thumbnail_path, processing_state, loop_enabled, is_builtin,
+                       is_vertical, thumbnail_path, processing_state, loop_enabled, is_builtin, is_remote,
                        mark_in_seconds, mark_out_seconds, tags,
                        (CASE WHEN audio_levels IS NOT NULL AND LENGTH(audio_levels) > 2 THEN 1 ELSE 0 END) AS has_audio_levels
                 FROM clips ORDER BY sort_order ASC, id ASC
@@ -653,6 +753,11 @@ class ClipStore:
             ).fetchall()
         clips: list[ClipRecord] = []
         for index, row in enumerate(rows, start=1):
+            is_remote = bool(row['is_remote'])
+            if is_remote:
+                source, available = 'Link', True
+            else:
+                source, available = classify(row['filepath'], bool(row['is_builtin']))
             clips.append(
                 ClipRecord(
                     deck_id=index,
@@ -676,9 +781,137 @@ class ClipStore:
                     mark_out_seconds=float(row['mark_out_seconds'] or 0.0),
                     tags=row['tags'] or '',
                     has_audio_levels=bool(row['has_audio_levels']),
+                    source=source,
+                    available=available,
+                    is_remote=is_remote,
                 )
             )
         return clips
+
+    async def path_for_filename(self, filename: str) -> str | None:
+        return await asyncio.to_thread(self._path_for_filename_sync, filename)
+
+    def _path_for_filename_sync(self, filename: str) -> str | None:
+        with self._connect() as conn:
+            row = conn.execute('SELECT filepath FROM clips WHERE filename = ? AND is_remote = 0', (filename,)).fetchone()
+        return row['filepath'] if row else None
+
+    async def add_remote_clip(self, url: str, name: str | None = None) -> str:
+        """Add a network link (http/rtsp/...) as a playable clip.
+
+        Inserts immediately so the operator sees it, then probes the URL in the
+        background for duration / thumbnail; a slow or live source just stays an
+        open-ended clip.
+        """
+        key, clean_url = await asyncio.to_thread(self._insert_remote_clip_sync, url, name)
+        task = asyncio.create_task(self._enrich_remote_clip(key, clean_url))
+        self._remote_enrichment_tasks.add(task)
+        task.add_done_callback(self._remote_enrichment_tasks.discard)
+        return key
+
+    def _insert_remote_clip_sync(self, url: str, name: str | None) -> tuple[str, str]:
+        clean = (url or '').strip()
+        parsed = urlparse(clean)
+        if parsed.scheme.lower() not in REMOTE_URL_SCHEMES or not parsed.netloc:
+            raise ValueError('Enter a full media URL, e.g. https://… or rtsp://…')
+        key = 'link-' + hashlib.sha1(clean.encode('utf-8')).hexdigest()[:16]
+        display = (name or '').strip() or self._remote_display_name(parsed)
+        with self._connect() as conn:
+            duplicate = conn.execute(
+                'SELECT 1 FROM clips WHERE filepath = ? OR filename = ?', (clean, key)
+            ).fetchone()
+            if duplicate:
+                raise ValueError('That link is already in the library.')
+            sort_seed = conn.execute('SELECT COALESCE(MAX(sort_order), 0) FROM clips').fetchone()[0]
+            conn.execute(
+                """
+                INSERT INTO clips (
+                    sort_order, name, folder, filename, filepath, duration_seconds, duration_timecode,
+                    framerate, codec, width, height, media_kind, is_vertical, thumbnail_path, processing_state, loop_enabled, is_builtin, is_remote
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1)
+                """,
+                (
+                    sort_seed + 1,
+                    display,
+                    'Library',
+                    key,
+                    clean,
+                    0.0,
+                    '00:00:00:00',
+                    self.config.default_framerate,
+                    'unknown',
+                    0,
+                    0,
+                    'video',
+                    0,
+                    None,
+                    'pending',
+                ),
+            )
+            conn.commit()
+        self._invalidate_clips_cache()
+        return key, clean
+
+    @staticmethod
+    def _remote_display_name(parsed) -> str:
+        tail = parsed.path.rstrip('/').rsplit('/', 1)[-1]
+        return tail or parsed.netloc or 'Network link'
+
+    async def _enrich_remote_clip(self, filename: str, url: str) -> None:
+        try:
+            await asyncio.to_thread(self._set_processing_state_sync, filename, 'processing')
+            self._enrichment_notify_event.set()
+            meta = await asyncio.to_thread(self._ffprobe_meta, url, 'video', 20.0)
+            thumb = await asyncio.to_thread(self._generate_remote_thumbnail, url, filename)
+            await asyncio.to_thread(self._apply_remote_meta_sync, filename, meta, thumb)
+        except Exception:
+            # Never let a bad link wedge the clip in 'processing'.
+            await asyncio.to_thread(self._set_processing_state_sync, filename, 'ready')
+        finally:
+            self._enrichment_notify_event.set()
+
+    def _apply_remote_meta_sync(self, filename: str, meta: dict, thumb: str | None) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                '''
+                UPDATE clips
+                SET width = ?, height = ?, is_vertical = ?, codec = ?, framerate = ?,
+                    duration_seconds = ?, duration_timecode = ?, thumbnail_path = ?, processing_state = 'ready'
+                WHERE filename = ?
+                ''',
+                (
+                    meta['width'],
+                    meta['height'],
+                    1 if meta['is_vertical'] else 0,
+                    meta['codec'],
+                    meta['framerate'],
+                    meta['duration_seconds'],
+                    meta['duration_timecode'],
+                    thumb,
+                    filename,
+                ),
+            )
+            conn.commit()
+        self._invalidate_clips_cache()
+
+    def _generate_remote_thumbnail(self, url: str, key: str) -> str | None:
+        if not shutil.which(self.config.ffmpeg_binary):
+            return None
+        output = self.thumbnails_dir / f'{key}.jpg'
+
+        def grab(seek: float | None) -> None:
+            cmd = [self.config.ffmpeg_binary, '-y', '-hide_banner', '-loglevel', 'error']
+            if seek is not None:
+                cmd.extend(['-ss', str(seek)])
+            cmd.extend(['-i', url, '-frames:v', '1', '-vf', 'scale=256:-2:flags=lanczos',
+                        '-q:v', '6', '-map_metadata', '-1', str(output)])
+            with contextlib.suppress(subprocess.TimeoutExpired, OSError):
+                subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+
+        grab(1.0)
+        if not output.exists():
+            grab(None)  # live streams / very short clips: take the first frame
+        return str(output) if output.exists() else None
 
     async def get_clip(self, deck_id: int) -> ClipRecord | None:
         clips = await self.list_clips()

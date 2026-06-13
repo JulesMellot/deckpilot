@@ -261,9 +261,11 @@ Beyond the HyperDeck protocol, DeckPilot exposes a full HTTP + WebSocket API:
 
 ## Contributing
 
-Contributions and testing feedback are welcome, and **real ATEM validation reports are the most valuable thing you can send right now**. If you run DeckPilot against live hardware, protocol traces and setup notes help more than anything else.
+Pull requests are welcome. The project is small and still moving, so the easiest path is to open an issue first if your change is large — that way we can agree on the approach before you write code. Bug fixes, docs, and small features can go straight to a PR.
 
-Run the test suite with:
+Testing feedback matters just as much as code. If you run DeckPilot against live hardware, send us protocol traces and your ATEM setup notes — real validation reports are the most useful thing the project needs right now.
+
+Before you push a PR, run the test suite:
 
 ```bash
 python3 -m unittest discover -s tests

@@ -184,6 +184,14 @@ flowchart TD
 
 State flows one way. The web UI and the HyperDeck server both call into the **one** `DeckController`. The controller updates shared state, drives `mpv` over a JSON IPC socket, and pushes incremental updates to every connected browser over WebSocket. `ffmpeg` / `ffprobe` do the heavy media work in the background so playback always keeps priority.
 
+### Why a Raspberry Pi
+
+I target the Raspberry Pi on purpose, and specifically the cheaper end of it. The goal is a deck that stays rock-solid on one of the least expensive SBCs on the market, so the whole thing lands at a price that actually makes sense next to what it replaces.
+
+Pi 4 and Pi 5 prices have climbed to a point that stopped being reasonable, and the competing boards followed. So instead of chasing the fastest hardware, I push to get as much as possible out of the smallest — a Pi 3B+ with 1 GB of RAM. If it runs well there, it runs well everywhere, and nobody has to buy a board that costs more than the rest of their kit.
+
+The flip side is the nice part: the optimization is for the floor, not a ceiling. Put DeckPilot on more powerful hardware and it simply does more — 4K playback, HDR, an NDI signal, even recording become realistic on a Pi 5 or a small x86 box. The cheap board is the baseline I refuse to break, not the limit.
+
 ### Built lean, on purpose
 
 The reference target is a Raspberry Pi 3B+ with 1 GB of RAM, and the design reflects that:

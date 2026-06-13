@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import shutil
 import time
 from typing import Any, Dict
@@ -715,18 +716,8 @@ class DeckController:
         return {'volume': self._volume, 'muted': self._muted, 'device': self.player.selected_audio_device}
 
     async def list_audio_devices(self) -> list[Dict[str, Any]]:
-        selected = self.player.selected_audio_device
-        devices = await self.player.list_audio_devices()
-        if not any(device['name'] == 'auto' for device in devices):
-            devices.insert(0, {'name': 'auto', 'description': 'Auto (system default)'})
-        # Keep the saved choice visible even while mpv cannot enumerate it
-        # (device unplugged, player restarting).
-        if not any(device['name'] == selected for device in devices):
-            devices.append({'name': selected, 'description': selected})
-        return [
-            {'id': device['name'], 'label': device['description'], 'selected': device['name'] == selected}
-            for device in devices
-        ]
+        raw_devices = await self.player.list_audio_devices()
+        return summarize_audio_devices(raw_devices, self.player.selected_audio_device)
 
     async def select_audio_device(self, device: str) -> None:
         if not await self.player.set_audio_device(device):
@@ -1029,6 +1020,107 @@ class DeckController:
             return
         self._last_error_key = error_key
         await self.state.add_log('error', source, message)
+
+
+# mpv lists every ALSA PCM (hardware, plughw, dmix, plus pure software plugins
+# like rate converters and channel up/downmix). Operators only care about the
+# physical jack the sound leaves through, so we collapse the list to one entry
+# per sound card and label it HDMI / Jack / USB.
+_AUDIO_PCM_PREFERENCE = ('sysdefault:', 'default:', 'plughw:', 'plug:', 'front:', 'hw:')
+_AUDIO_CARD_RE = re.compile(r'CARD=([^,]+)')
+
+
+def _audio_card_token(name: str) -> str | None:
+    match = _AUDIO_CARD_RE.search(name or '')
+    return match.group(1) if match else None
+
+
+def _audio_pcm_rank(name: str) -> int:
+    # Prefer PCMs that let ALSA mix and convert (sysdefault/default) over raw
+    # hardware access, which can refuse the clip's sample format outright.
+    for index, prefix in enumerate(_AUDIO_PCM_PREFERENCE):
+        if f'alsa/{prefix}' in name:
+            return index
+    return len(_AUDIO_PCM_PREFERENCE)
+
+
+def _audio_label_base(card: str, descriptions: list[str]) -> tuple[str, int]:
+    """Map a sound card to a friendly label and a sort priority."""
+    text = f'{card} {" ".join(descriptions)}'.lower()
+    if 'hdmi' in text:
+        return 'HDMI', 0
+    if 'headphone' in text or 'analog' in text:
+        return 'Jack', 1
+    if 'usb' in text:
+        return 'USB', 2
+    # Unknown hardware: fall back to its cleanest descriptive name.
+    for description in descriptions:
+        candidate = description.split('/', 1)[0].split(',', 1)[0].strip()
+        if candidate:
+            return candidate, 3
+    return card, 3
+
+
+def summarize_audio_devices(raw_devices: list[Dict[str, Any]], selected: str) -> list[Dict[str, Any]]:
+    selected = (selected or 'auto').strip() or 'auto'
+    groups: dict[str, Dict[str, Any]] = {}
+    selected_card = _audio_card_token(selected)
+    for device in raw_devices:
+        name = str(device.get('name') or '')
+        description = str(device.get('description') or name)
+        if name == 'auto':
+            continue
+        card = _audio_card_token(name)
+        if not card:
+            # Drops alsa plugins, pulse, jack and sdl sinks: no physical jack.
+            continue
+        rank = _audio_pcm_rank(name)
+        group = groups.get(card)
+        if group is None:
+            groups[card] = {'card': card, 'name': name, 'rank': rank, 'descriptions': [description]}
+        else:
+            group['descriptions'].append(description)
+            if rank < group['rank']:
+                group['name'] = name
+                group['rank'] = rank
+
+    entries: list[Dict[str, Any]] = []
+    used_labels: dict[str, int] = {}
+    for group in groups.values():
+        base, priority = _audio_label_base(group['card'], group['descriptions'])
+        count = used_labels.get(base, 0) + 1
+        used_labels[base] = count
+        entries.append(
+            {
+                'id': group['name'],
+                'label': base,
+                'priority': priority,
+                'card': group['card'],
+                'selected': group['name'] == selected or group['card'] == selected_card,
+            }
+        )
+    # Disambiguate repeated labels (e.g. two HDMI ports) only once we know the count.
+    label_counts: dict[str, int] = {}
+    for entry in entries:
+        label_counts[entry['label']] = label_counts.get(entry['label'], 0) + 1
+    seen: dict[str, int] = {}
+    for entry in entries:
+        if label_counts[entry['label']] > 1:
+            seen[entry['label']] = seen.get(entry['label'], 0) + 1
+            entry['label'] = f'{entry["label"]} {seen[entry["label"]]}'
+
+    entries.sort(key=lambda item: (item['priority'], item['label']))
+
+    options: list[Dict[str, Any]] = [
+        {'id': 'auto', 'label': 'Auto', 'selected': selected == 'auto'}
+    ]
+    for entry in entries:
+        options.append({'id': entry['id'], 'label': entry['label'], 'selected': entry['selected']})
+
+    # Keep a stale or hand-edited selection visible so it is never silently lost.
+    if selected != 'auto' and not any(option['selected'] for option in options):
+        options.append({'id': selected, 'label': selected, 'selected': True})
+    return options
 
 
 def _parse_canvas_mode(mode: str) -> tuple[int | None, int | None]:

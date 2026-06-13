@@ -291,7 +291,7 @@ Rough order, not hard dates. The cheap-Pi baseline always comes first; the heavi
 
 **Now → hardening the core**
 
-- Real-world ATEM validation across more switcher models and firmware.
+- Real-world ATEM validation — ongoing. Around a dozen sessions so far with no issues, but not yet tested against the full range of Blackmagic switchers and firmware, so more hardware coverage is the priority.
 - Broader HyperDeck protocol coverage and a wider automated test suite.
 - Import diagnostics (tell the operator *why* a file was rejected or stalled).
 - First-run setup guide and clearer in-app errors.
@@ -319,6 +319,8 @@ Rough order, not hard dates. The cheap-Pi baseline always comes first; the heavi
 Pull requests are welcome. The project is small and still moving, so the easiest path is to open an issue first if your change is large — that way we can agree on the approach before you write code. Bug fixes, docs, and small features can go straight to a PR.
 
 Testing feedback matters just as much as code. If you run DeckPilot against live hardware, send us protocol traces and your ATEM setup notes — real validation reports are the most useful thing the project needs right now.
+
+Feature ideas are welcome too. Open an issue with what you'd like to see and why — every suggestion is read, and the roadmap is shaped by what operators actually ask for.
 
 Before you push a PR, run the test suite:
 

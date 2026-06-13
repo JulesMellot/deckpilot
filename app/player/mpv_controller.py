@@ -4,11 +4,18 @@ import asyncio
 import json
 import os
 import platform
+import re
 from asyncio.subprocess import Process
 from pathlib import Path
 from typing import Any
 
 from app.core.config import AppConfig
+
+_AUDIO_CARD_RE = re.compile(r'CARD=([^,]+)')
+# The analog jack on a Pi is quiet because its ALSA mixer ships below unity.
+# mpv's `volume` is software-only, so we lift the card's playback controls to
+# 100% at startup; the slider then attenuates from a full-level signal.
+_HARDWARE_MIXER_CONTROLS = ('PCM', 'Master', 'Headphone', 'Speaker', 'Digital')
 
 
 class MPVController:
@@ -67,6 +74,7 @@ class MPVController:
                 try:
                     self._reader, self._writer = await self._open_ipc()
                     self.last_error = None
+                    await self._maximize_hardware_mixer()
                     return
                 except (ConnectionError, FileNotFoundError, OSError):
                     pass
@@ -210,10 +218,32 @@ class MPVController:
 
     async def set_audio_device(self, device: str) -> bool:
         self._selected_audio_device = (device or 'auto').strip() or 'auto'
+        await self._maximize_hardware_mixer()
         if not await self.is_available():
             # Remembered anyway: the next mpv start picks it up via --audio-device.
             return True
         return await self._command_ok(['set_property', 'audio-device', self._selected_audio_device])
+
+    async def _maximize_hardware_mixer(self) -> None:
+        """Lift the selected card's ALSA playback controls to full level so the
+        software slider is not fighting a half-open hardware mixer."""
+        if platform.system().lower() != 'linux':
+            return
+        match = _AUDIO_CARD_RE.search(self._selected_audio_device)
+        if not match:
+            return
+        card = match.group(1)
+        for control in _HARDWARE_MIXER_CONTROLS:
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    'amixer', '-c', card, 'sset', control, '100%', 'unmute',
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+            except (FileNotFoundError, OSError):
+                return  # amixer absent: nothing more to try
+            # A missing control just returns non-zero — harmless, move on.
+            await process.wait()
 
     async def set_output(self, output_id: str) -> None:
         if output_id == self._selected_output_id:

@@ -124,6 +124,13 @@ class MPVControllerAudioDeviceTests(unittest.IsolatedAsyncioTestCase):
         _, command = controller._startup_profiles(Path('/tmp/mpv-test.log'))[0]
         self.assertIn('--audio-device=alsa/sysdefault:CARD=Headphones', command)
 
+    async def test_hardware_mixer_boost_is_a_safe_noop_without_a_card(self) -> None:
+        # 'auto' carries no CARD= token, so there is nothing to boost and the
+        # call must never raise regardless of platform or amixer availability.
+        controller = MPVController(AppConfig())
+
+        await controller._maximize_hardware_mixer()
+
     async def test_list_audio_devices_parses_mpv_response(self) -> None:
         controller = MPVController(AppConfig())
         controller.process = SimpleNamespace(returncode=None)

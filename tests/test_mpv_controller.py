@@ -101,6 +101,60 @@ class MPVControllerAudioDeviceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(any(arg.startswith('--audio-device=') for arg in command))
 
+    async def test_default_hwdec_is_auto_safe(self) -> None:
+        controller = MPVController(AppConfig())
+
+        for _, command in controller._startup_profiles(Path('/tmp/mpv-test.log')):
+            self.assertIn('--hwdec=auto-safe', command)
+
+    async def test_configured_hwdec_is_passed_to_every_profile(self) -> None:
+        # The Pi needs its V4L2 decoder on whichever VO profile actually starts.
+        controller = MPVController(AppConfig(mpv_hwdec='v4l2m2m-copy'))
+
+        profiles = controller._startup_profiles(Path('/tmp/mpv-test.log'))
+
+        for _, command in profiles:
+            self.assertIn('--hwdec=v4l2m2m-copy', command)
+            self.assertNotIn('--hwdec=auto-safe', command)
+
+    async def test_blank_hwdec_falls_back_to_auto_safe(self) -> None:
+        controller = MPVController(AppConfig(mpv_hwdec='  '))
+
+        _, command = controller._startup_profiles(Path('/tmp/mpv-test.log'))[0]
+
+        self.assertIn('--hwdec=auto-safe', command)
+
+
+class MPVControllerCodecHwdecTests(unittest.IsolatedAsyncioTestCase):
+    async def test_explicit_h264_hwdec_is_used_for_h264_only(self) -> None:
+        controller = MPVController(AppConfig(mpv_hwdec_h264='v4l2m2m-copy'))
+
+        self.assertEqual(controller._hwdec_for_codec('h264'), 'v4l2m2m-copy')
+        self.assertEqual(controller._hwdec_for_codec('H264'), 'v4l2m2m-copy')
+        # Codecs the Pi has no hardware block for keep the general default.
+        self.assertEqual(controller._hwdec_for_codec('hevc'), 'auto-safe')
+        self.assertEqual(controller._hwdec_for_codec(None), 'auto-safe')
+
+    async def test_without_detection_h264_uses_default(self) -> None:
+        # No explicit override and (on the test host) no /dev/video10.
+        controller = MPVController(AppConfig())
+        controller._h264_hwdec = None
+
+        self.assertEqual(controller._hwdec_for_codec('h264'), 'auto-safe')
+
+    async def test_play_file_sets_hwdec_for_clip_codec(self) -> None:
+        controller = MPVController(AppConfig(mpv_hwdec_h264='v4l2m2m-copy'))
+        controller.process = SimpleNamespace(returncode=None)
+        controller._writer = FakeWriter()
+        controller._reader = FakeReader(['{"request_id":%d,"error":"success"}' % i for i in range(1, 20)])
+
+        ok = await controller.play_file('/tmp/clip.mp4', codec='h264')
+
+        self.assertTrue(ok)
+        joined = b''.join(controller._writer.payloads).decode('utf-8')
+        self.assertIn('"hwdec"', joined)
+        self.assertIn('v4l2m2m-copy', joined)
+
     async def test_set_audio_device_updates_running_player(self) -> None:
         controller = MPVController(AppConfig())
         controller.process = SimpleNamespace(returncode=None)

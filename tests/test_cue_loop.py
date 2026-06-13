@@ -15,6 +15,7 @@ class FakeClip:
     filepath: str
     duration_seconds: float = 12.0
     framerate: float = 25.0
+    codec: str = 'h264'
     media_kind: str = 'video'
     is_vertical: bool = False
     loop_enabled: bool = False
@@ -214,12 +215,12 @@ class FakePlayer:
         self.standby_calls.append(path)
         return True
 
-    async def cue_file(self, path: str, loop: bool = False, is_vertical: bool = False, start: float = 0.0) -> bool:
+    async def cue_file(self, path: str, loop: bool = False, is_vertical: bool = False, start: float = 0.0, codec: str | None = None) -> bool:
         self.cue_calls.append((path, loop))
         self.cue_starts.append(start)
         return True
 
-    async def play_file(self, path: str, loop: bool = False, is_vertical: bool = False, start: float = 0.0) -> bool:
+    async def play_file(self, path: str, loop: bool = False, is_vertical: bool = False, start: float = 0.0, codec: str | None = None) -> bool:
         self.play_calls.append((path, loop))
         self.play_starts.append(start)
         return True

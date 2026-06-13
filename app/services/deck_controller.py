@@ -180,7 +180,7 @@ class DeckController:
             await self._publish_health()
             return False
         in_point, out_point = clip.trim_bounds()
-        if not await self.player.cue_file(clip.filepath, loop=clip.loop_enabled, is_vertical=clip.is_vertical, start=in_point):
+        if not await self.player.cue_file(clip.filepath, loop=clip.loop_enabled, is_vertical=clip.is_vertical, start=in_point, codec=clip.codec):
             await self._report_error('player', f'Cue failed for "{clip.name}": {self.player.last_error or "unknown player error"}')
             await self._publish_health()
             return False
@@ -997,14 +997,14 @@ class DeckController:
             await self._report_error('player', f'Player unavailable: {self.player.last_error or "startup failed"}')
             await self._publish_health()
             return False
-        started = await self.player.play_file(clip.filepath, loop=use_loop, is_vertical=clip.is_vertical, start=start_seconds)
+        started = await self.player.play_file(clip.filepath, loop=use_loop, is_vertical=clip.is_vertical, start=start_seconds, codec=clip.codec)
         if started:
             return True
         await self._report_error('player', f'Playback failed for "{clip.name}": {self.player.last_error or "unknown player error"}')
         if not await self._ensure_player_ready(force_restart=True):
             await self._publish_health()
             return False
-        started = await self.player.play_file(clip.filepath, loop=use_loop, is_vertical=clip.is_vertical, start=start_seconds)
+        started = await self.player.play_file(clip.filepath, loop=use_loop, is_vertical=clip.is_vertical, start=start_seconds, codec=clip.codec)
         if not started:
             await self._report_error('player', f'Playback recovery failed for "{clip.name}": {self.player.last_error or "unknown player error"}')
             await self.player.stop_process()

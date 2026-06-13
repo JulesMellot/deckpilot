@@ -31,6 +31,7 @@ class MPVController:
         self._current_video_format: str = config.default_video_format
         self._output_width: int | None = None
         self._output_height: int | None = None
+        self._h264_hwdec: str | None = self._detect_h264_hwdec()
         self.last_error: str | None = None
 
     def _ipc_path(self) -> str:
@@ -133,9 +134,13 @@ class MPVController:
         response = await self.command(command)
         return bool(response and response.get('error') == 'success')
 
-    async def play_file(self, path: str, loop: bool = False, is_vertical: bool = False, start: float = 0.0) -> bool:
+    async def play_file(self, path: str, loop: bool = False, is_vertical: bool = False, start: float = 0.0, codec: str | None = None) -> bool:
         if not await self._command_ok(['set_property', 'vf', '']):
             return False
+        # Pick the decoder for this clip's codec before loading: H.264 gets the
+        # Pi's hardware path, everything else the default. Set per-load because a
+        # previous clip may have left a different hwdec in place.
+        await self._command_ok(['set_property', 'hwdec', self._hwdec_for_codec(codec)])
         # mpv keeps the speed property across loadfile, so every fresh start resets to 1x.
         if not await self._command_ok(['set_property', 'speed', 1.0]):
             return False
@@ -152,9 +157,10 @@ class MPVController:
             await self.seek_absolute(start)
         return await self._command_ok(['set_property', 'pause', False])
 
-    async def cue_file(self, path: str, loop: bool = False, is_vertical: bool = False, start: float = 0.0) -> bool:
+    async def cue_file(self, path: str, loop: bool = False, is_vertical: bool = False, start: float = 0.0, codec: str | None = None) -> bool:
         if not await self._command_ok(['set_property', 'vf', '']):
             return False
+        await self._command_ok(['set_property', 'hwdec', self._hwdec_for_codec(codec)])
         if not await self._command_ok(['set_property', 'speed', 1.0]):
             return False
         await self._command_ok(['set_property', 'image-display-duration', 'inf'])
@@ -283,6 +289,32 @@ class MPVController:
         self.last_error = f'timed out waiting for mpv IPC response {request_id}'
         return None
 
+    def _hwdec_mode(self) -> str:
+        # mpv tolerates an unknown hwdec (logs "Unsupported hwdec" and falls
+        # back to software), so a Pi value like "v4l2m2m-copy" stays harmless on
+        # other hosts. An empty config still gets the safe cross-platform pick.
+        return (self.config.mpv_hwdec or '').strip() or 'auto-safe'
+
+    def _detect_h264_hwdec(self) -> str | None:
+        # An explicit config wins; otherwise auto-detect the Pi's VideoCore
+        # H.264 decoder. On Pi OS the bcm2835-codec exposes it at /dev/video10
+        # and mpv reaches it through ffmpeg's v4l2m2m wrapper. `auto-safe` never
+        # selects it, so H.264 clips would otherwise software-decode and stutter.
+        configured = (self.config.mpv_hwdec_h264 or '').strip()
+        if configured:
+            return configured
+        if platform.system().lower() == 'linux' and Path('/dev/video10').exists():
+            return 'v4l2m2m-copy'
+        return None
+
+    def _hwdec_for_codec(self, codec: str | None) -> str:
+        # H.264 gets the dedicated hardware path when one was detected; anything
+        # else (HEVC/VP9/images/…) falls back to the general default, which the
+        # Pi has no hardware block for anyway.
+        if self._h264_hwdec and (codec or '').strip().lower() == 'h264':
+            return self._h264_hwdec
+        return self._hwdec_mode()
+
     def _startup_profiles(self, log_path: Path) -> list[tuple[str, list[str]]]:
         base_args = [
             self.config.mpv_binary,
@@ -298,7 +330,7 @@ class MPVController:
             '--osc=no',
             '--load-scripts=no',
             '--osd-level=0',
-            '--hwdec=auto-safe',
+            f'--hwdec={self._hwdec_mode()}',
             # Bound the demuxer cache: mpv defaults to ~150 MiB forward cache,
             # which starves a 1 GB Pi. Local SD/USB reads do not need it.
             '--demuxer-max-bytes=48MiB',

@@ -23,6 +23,16 @@ class AppConfig:
     mpv_socket_path: str = "/tmp/pideck-mpv.sock"
     mpv_log_path: str = "/home/pi/pideck/data/mpv.log"
     mpv_binary: str = "mpv"
+    # mpv --hwdec mode. "auto-safe" is the right cross-platform default (picks
+    # videotoolbox/vaapi/etc. only when known-good). It does NOT engage the
+    # Raspberry Pi's V4L2 H.264 decoder, so a Pi software-decodes 1080p and
+    # drops frames; set "v4l2m2m-copy" on a Pi to use the hardware decoder.
+    mpv_hwdec: str = "auto-safe"
+    # hwdec used specifically for H.264 clips. Empty = auto-detect: on a Pi
+    # (Linux + /dev/video10) it resolves to "v4l2m2m-copy" to drive the
+    # VideoCore H.264 decoder, otherwise it falls back to `mpv_hwdec`. Set it
+    # explicitly (e.g. "drm" or "no") to override the auto-detection.
+    mpv_hwdec_h264: str = ""
     ffmpeg_binary: str = "ffmpeg"
     ffprobe_binary: str = "ffprobe"
     default_video_format: str = "1080p25"
@@ -76,6 +86,8 @@ def load_config() -> AppConfig:
         "mpv_log_path": os.environ.get("PIDECK_MPV_LOG_PATH"),
         "default_video_format": os.environ.get("PIDECK_VIDEO_FORMAT"),
         "audio_device": os.environ.get("PIDECK_AUDIO_DEVICE"),
+        "mpv_hwdec": os.environ.get("PIDECK_MPV_HWDEC"),
+        "mpv_hwdec_h264": os.environ.get("PIDECK_MPV_HWDEC_H264"),
         "media_enrichment_workers": int(os.environ["PIDECK_MEDIA_ENRICHMENT_WORKERS"]) if os.environ.get("PIDECK_MEDIA_ENRICHMENT_WORKERS") else None,
         "default_image_duration_seconds": float(os.environ["PIDECK_DEFAULT_IMAGE_DURATION_SECONDS"]) if os.environ.get("PIDECK_DEFAULT_IMAGE_DURATION_SECONDS") else None,
         "watch_folder_seconds": float(os.environ["PIDECK_WATCH_FOLDER_SECONDS"]) if os.environ.get("PIDECK_WATCH_FOLDER_SECONDS") else None,

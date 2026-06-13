@@ -13,6 +13,8 @@
   "mpv_socket_path": "/tmp/pideck-mpv.sock",
   "mpv_log_path": "/home/pi/pideck/data/mpv.log",
   "mpv_binary": "mpv",
+  "mpv_hwdec": "auto-safe",
+  "mpv_hwdec_h264": "",
   "ffmpeg_binary": "ffmpeg",
   "ffprobe_binary": "ffprobe",
   "default_video_format": "1080p25",

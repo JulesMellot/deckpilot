@@ -27,6 +27,10 @@ class AppConfig:
     ffprobe_binary: str = "ffprobe"
     default_video_format: str = "1080p25"
     default_framerate: float = 25.0
+    # mpv audio device name ("auto", "alsa/sysdefault:CARD=vc4hdmi0", ...);
+    # lets the sound leave through HDMI or the headphone jack independently
+    # of the selected video output.
+    audio_device: str = "auto"
     ws_tick_seconds: float = 1.0
     log_buffer_size: int = 200
     allowed_upload_extensions: list[str] = field(default_factory=lambda: [".mp4", ".mov", ".mkv", ".jpg", ".jpeg", ".png", ".webp", ".gif"])
@@ -71,6 +75,7 @@ def load_config() -> AppConfig:
         "db_path": os.environ.get("PIDECK_DB_PATH"),
         "mpv_log_path": os.environ.get("PIDECK_MPV_LOG_PATH"),
         "default_video_format": os.environ.get("PIDECK_VIDEO_FORMAT"),
+        "audio_device": os.environ.get("PIDECK_AUDIO_DEVICE"),
         "media_enrichment_workers": int(os.environ["PIDECK_MEDIA_ENRICHMENT_WORKERS"]) if os.environ.get("PIDECK_MEDIA_ENRICHMENT_WORKERS") else None,
         "default_image_duration_seconds": float(os.environ["PIDECK_DEFAULT_IMAGE_DURATION_SECONDS"]) if os.environ.get("PIDECK_DEFAULT_IMAGE_DURATION_SECONDS") else None,
         "watch_folder_seconds": float(os.environ["PIDECK_WATCH_FOLDER_SECONDS"]) if os.environ.get("PIDECK_WATCH_FOLDER_SECONDS") else None,

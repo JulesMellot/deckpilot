@@ -145,6 +145,7 @@ const DOM = {
   configFormat: document.getElementById('config-format'),
   configOutput: document.getElementById('config-output'),
   configCanvas: document.getElementById('config-canvas'),
+  configAudio: document.getElementById('config-audio'),
   healthPlayer: document.getElementById('health-player'),
   healthOutput: document.getElementById('health-output'),
   healthStorage: document.getElementById('health-storage'),
@@ -1012,6 +1013,24 @@ function closeSettingsModal() {
 function openSettingsModal() {
   DOM.settingsModal.hidden = false;
   void loadConfigEditor().catch((error) => console.error(error));
+  void loadAudioDevices().catch((error) => console.error(error));
+}
+
+async function loadAudioDevices() {
+  const payload = await api('/api/system/audio-devices');
+  renderAudioDevices(payload.devices || []);
+}
+
+function renderAudioDevices(devices) {
+  const fragment = document.createDocumentFragment();
+  devices.forEach((device) => {
+    const option = document.createElement('option');
+    option.value = device.id;
+    option.textContent = device.label;
+    option.selected = device.selected;
+    fragment.appendChild(option);
+  });
+  DOM.configAudio.replaceChildren(fragment);
 }
 
 async function loadConfigEditor() {
@@ -2200,6 +2219,16 @@ bindAsync(DOM.configCanvas, 'change', async (e) => {
     renderDisplaySettings(state.snapshot.display);
   }
 }, 'Display Error');
+bindAsync(DOM.configAudio, 'change', async (e) => {
+  if (!await ensureLiveActionAllowed('Audio output change')) {
+    void loadAudioDevices().catch(() => {});
+    return;
+  }
+  const response = await api('/api/system/audio-device', { method: 'POST', body: JSON.stringify({ device: e.target.value }) });
+  if (response?.devices) {
+    renderAudioDevices(response.devices);
+  }
+}, 'Audio Error');
 DOM.configVolume.addEventListener('input', (e) => {
   scheduleVolumeCommit(Number(e.target.value));
 });

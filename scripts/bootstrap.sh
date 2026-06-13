@@ -264,13 +264,16 @@ install_homebrew() {
 }
 
 install_packages_linux() {
+  # ntfs-3g / exfatprogs let the USB auto-mount handle Windows-formatted drives;
+  # in-kernel drivers cover vfat/exfat/ntfs3 on recent kernels but these are the
+  # safe fallback on older ones.
   if command_exists apt-get; then
     $SUDO apt-get update
-    $SUDO apt-get install -y git curl rsync python3 python3-venv python3-pip ffmpeg mpv sqlite3
+    $SUDO apt-get install -y git curl rsync python3 python3-venv python3-pip ffmpeg mpv sqlite3 ntfs-3g exfatprogs
   elif command_exists dnf; then
-    $SUDO dnf install -y git curl rsync python3 python3-pip ffmpeg mpv sqlite
+    $SUDO dnf install -y git curl rsync python3 python3-pip ffmpeg mpv sqlite ntfs-3g exfatprogs
   elif command_exists yum; then
-    $SUDO yum install -y git curl rsync python3 python3-pip ffmpeg mpv sqlite
+    $SUDO yum install -y git curl rsync python3 python3-pip ffmpeg mpv sqlite ntfs-3g exfatprogs
   elif command_exists pacman; then
     $SUDO pacman -Sy --noconfirm git curl rsync python python-pip ffmpeg mpv sqlite
   elif command_exists zypper; then
@@ -368,6 +371,98 @@ EOF
   $SUDO chmod 440 "$sudoers_path"
 }
 
+install_usb_automount() {
+  # Headless Pi OS Lite has no desktop automounter, so a plugged-in USB drive is
+  # never mounted and DeckPilot (which only reads mounted volumes) can't see it.
+  # A udev rule hands each new USB filesystem to a templated systemd unit that
+  # mounts it under /media/deckpilot/<label>; DeckPilot already scans /media.
+  command_exists systemctl || return 0
+  command_exists udevadm || return 0
+
+  local helper_path="/usr/local/bin/deckpilot-usb-mount"
+  local unit_path="/etc/systemd/system/deckpilot-usb-mount@.service"
+  local rules_path="/etc/udev/rules.d/99-deckpilot-usb.rules"
+
+  # Helper is fully literal (single-quoted heredoc); the run user arrives via
+  # the unit's Environment so file ownership on FAT/exFAT/NTFS is set correctly.
+  $SUDO tee "$helper_path" >/dev/null <<'EOF'
+#!/usr/bin/env bash
+# Managed by DeckPilot bootstrap.sh — auto-mounts USB partitions for the library.
+set -euo pipefail
+
+cmd="${1:-}"
+dev="${2:-}"
+node="/dev/${dev}"
+base="/media/deckpilot"
+run_user="${DECKPILOT_USER:-root}"
+
+log() { logger -t deckpilot-usb-mount -- "$*" 2>/dev/null || true; }
+
+case "$cmd" in
+  mount)
+    fstype="$(blkid -o value -s TYPE "$node" 2>/dev/null || true)"
+    [ -n "$fstype" ] || { log "no filesystem on $node, skipping"; exit 0; }
+    label="$(blkid -o value -s LABEL "$node" 2>/dev/null || true)"
+    [ -n "$label" ] || label="$dev"
+    label="$(printf '%s' "$label" | tr -c 'A-Za-z0-9._-' '_')"
+    target="${base}/${label}"
+    if mountpoint -q "$target"; then target="${target}-${dev}"; fi
+    mkdir -p "$target"
+    uid="$(id -u "$run_user" 2>/dev/null || echo 0)"
+    gid="$(id -g "$run_user" 2>/dev/null || echo 0)"
+    case "$fstype" in
+      vfat|exfat|ntfs|ntfs3) opts="rw,noatime,uid=${uid},gid=${gid},umask=022" ;;
+      *)                     opts="rw,noatime" ;;
+    esac
+    if [ "$fstype" = "ntfs" ]; then
+      mount -t ntfs3 -o "$opts" "$node" "$target" 2>/dev/null \
+        || mount -t ntfs-3g -o "$opts" "$node" "$target" 2>/dev/null \
+        || mount "$node" "$target"
+    else
+      mount -o "$opts" "$node" "$target" 2>/dev/null \
+        || mount "$node" "$target"
+    fi
+    log "mounted $node ($fstype) at $target"
+    ;;
+  unmount)
+    mp="$(findmnt -n -o TARGET --source "$node" 2>/dev/null || true)"
+    if [ -n "$mp" ]; then
+      umount "$mp" 2>/dev/null || umount -l "$mp" 2>/dev/null || true
+      rmdir "$mp" 2>/dev/null || true
+      log "unmounted $node from $mp"
+    fi
+    ;;
+esac
+EOF
+  $SUDO chmod 755 "$helper_path"
+  $SUDO chown root:root "$helper_path"
+
+  $SUDO tee "$unit_path" >/dev/null <<EOF
+[Unit]
+Description=DeckPilot USB auto-mount for /dev/%i
+Requires=dev-%i.device
+BindsTo=dev-%i.device
+After=dev-%i.device
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=DECKPILOT_USER=$RUN_USER
+ExecStart=$helper_path mount %i
+ExecStop=$helper_path unmount %i
+EOF
+
+  $SUDO tee "$rules_path" >/dev/null <<'EOF'
+# DeckPilot: auto-mount USB filesystem volumes under /media/deckpilot/<label>.
+ACTION=="add", SUBSYSTEM=="block", SUBSYSTEMS=="usb", ENV{ID_FS_USAGE}=="filesystem", ENV{SYSTEMD_WANTS}+="deckpilot-usb-mount@%k.service", TAG+="systemd"
+EOF
+
+  $SUDO systemctl daemon-reload
+  $SUDO udevadm control --reload-rules 2>/dev/null || true
+  # Replay add events so drives already plugged in get mounted now, no reboot.
+  $SUDO udevadm trigger --subsystem-match=block --action=add 2>/dev/null || true
+}
+
 configure_console_boot() {
   command_exists systemctl || return 0
   is_linux_sbc || return 0
@@ -411,6 +506,7 @@ EOF
   $SUDO systemctl enable "$service_name"
   $SUDO systemctl restart "$service_name"
   install_reboot_helper
+  install_usb_automount
 }
 
 install_boot_info_service() {

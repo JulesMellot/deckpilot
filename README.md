@@ -32,6 +32,8 @@ It is **alpha / early beta**: already used for real-world validation, still in t
 
 **A library that fills itself.** Drag-and-drop upload, or just copy files onto the Pi over SMB/USB — the watch folder ingests anything whose copy has finished, then thumbnails, probes, and computes audio levels in the background while playback keeps priority. Videos and stills (PNG/JPG/WebP/GIF with per-still duration), folders, tags, search.
 
+**Send sound wherever you need it.** Video and audio outputs are independent: keep the picture on HDMI to the switcher while the sound leaves through the analog jack or a USB interface. **Settings → Audio Output** probes the Pi's sound cards and collapses ALSA's raw PCM list — hardware variants, dmix, software plugins, the lot — down to plain choices: **Auto / HDMI / Jack / USB** (numbered when there are two of a kind). The change applies live and is saved to `config.json`, so it survives an mpv relaunch and a reboot. Because the Pi's headphone jack is quiet by design, DeckPilot also lifts the card's ALSA mixer to full level at startup so the on-screen volume slider works from a real signal.
+
 **Numbers an operator trusts.** Live timecode with mark-aware countdown, a real VU meter driven by precomputed loudness envelopes (zero CPU cost during playback), CPU temperature / load / RAM on the health panel, and the HyperDeck protocol log streaming in green-on-black like it should.
 
 ## What the ATEM sees: the HyperDeck protocol
@@ -117,6 +119,7 @@ Web UI at [http://127.0.0.1:8080](http://127.0.0.1:8080). Configuration lives in
 | `PIDECK_WATCH_FOLDER_SECONDS` | Watch-folder scan interval (`0` disables) |
 | `PIDECK_DEFAULT_IMAGE_DURATION_SECONDS` | Default playout duration for stills |
 | `PIDECK_MEDIA_ENRICHMENT_WORKERS` | Background import workers (default 2) |
+| `PIDECK_AUDIO_DEVICE` | Force the audio output device (`auto`, or an mpv device name); usually set from Settings → Audio Output |
 
 ### Hook it to an ATEM
 
@@ -135,7 +138,7 @@ python3 scripts/hyperdeck_test_client.py <deck-ip>                  # interactiv
 
 ## Control surface
 
-- **REST** — `/api/state`, `/api/clips*` (goto, play, marks, rename, loop, folder, tags, duration, levels), `/api/transport/*` (stop, pause, resume, seek, speed), `/api/playlists*` (incl. per-item end behavior and reorder), `/api/system/*` (outputs, video format, black, safe mode, update, export, import, backup), `/api/audio/*`, `/api/upload`
+- **REST** — `/api/state`, `/api/clips*` (goto, play, marks, rename, loop, folder, tags, duration, levels), `/api/transport/*` (stop, pause, resume, seek, speed), `/api/playlists*` (incl. per-item end behavior and reorder), `/api/system/*` (outputs, video format, audio devices, black, safe mode, update, export, import, backup), `/api/audio/*` (volume, mute), `/api/upload`
 - **WebSocket** — `/ws` streams transport, media, playlists, audio, health, safety, and logs as incremental events
 - **Backup** — one-click JSON export/import of the whole library state (names, folders, marks, tags, playlists) and a consistent SQLite snapshot download
 

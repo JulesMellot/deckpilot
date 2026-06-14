@@ -10,7 +10,7 @@ No build step, no database server. One Python process, one SQLite file. The refe
 curl -fsSL https://raw.githubusercontent.com/JulesMellot/deckpilot/main/scripts/bootstrap.sh | bash
 ```
 
-That one command is the whole install on a Pi. It detects the platform, installs `mpv` and `ffmpeg`, sets up Python, registers a systemd service, and adds a boot screen on the HDMI output that shows the deck's IP address. Open `http://<pi-ip>:8080` and you are running.
+That one command is the whole install on a Pi. It detects the platform, installs `mpv` and `ffmpeg`, sets up Python, registers a systemd service, shares the clips folder over SMB, and adds a boot screen on the HDMI output that shows the deck's IP address. Open `http://<pi-ip>:8080` and you are running.
 
 > **Status:** alpha / early beta. It already works for real validation, but it is still being hardened. Protocol traces from real ATEM hardware are the single most useful thing you can contribute — see [Contributing](#contributing).
 
@@ -73,10 +73,10 @@ Set in and out marks from the live transport, or while scrubbing the browser pre
 Drop files in any of three ways and they appear in the library on their own:
 
 - drag-and-drop upload in the browser,
-- copy over SMB or USB into the clips folder,
+- copy over **SMB** (the installer shares the clips folder as `\\<pi>\DeckPilot`) or **USB** into the clips folder,
 - paste a network URL with **ADD LINK** (`http`, `https`, HLS, RTSP, RTMP) — mpv plays the stream like any clip; a live or slow source simply becomes an open-ended clip.
 
-A **watch folder** waits until a file's copy has finished, then generates the thumbnail, probes metadata, and computes audio levels in the background — always at lower priority than playback. Supported media: video (`.mp4`, `.mov`, `.mkv`, `.webm`) and stills (`.png`, `.jpg`, `.webp`, `.gif`, with a per-still duration). Folders, tags, and search are built in.
+A **watch folder** waits until each file's copy has finished — *per file*, so dropping a whole batch ingests progressively as each clip lands instead of stalling on the slowest one — then generates the thumbnail, probes metadata, and computes audio levels in the background. That background work runs at idle CPU and disk priority, strictly below playback, so even a large import mid-show never disturbs what is on air. Supported media: video (`.mp4`, `.mov`, `.mkv`, `.webm`) and stills (`.png`, `.jpg`, `.webp`, `.gif`, with a per-still duration). Folders, tags, and search are built in.
 
 ### SD card and USB drives, side by side
 
@@ -182,7 +182,7 @@ flowchart TD
     FF["ffmpeg / ffprobe"] -. "background" .-> Media["thumbnails · metadata · loudness"]
 ```
 
-State flows one way. The web UI and the HyperDeck server both call into the **one** `DeckController`. The controller updates shared state, drives `mpv` over a JSON IPC socket, and pushes incremental updates to every connected browser over WebSocket. `ffmpeg` / `ffprobe` do the heavy media work in the background so playback always keeps priority.
+State flows one way. The web UI and the HyperDeck server both call into the **one** `DeckController`. The controller updates shared state, drives `mpv` over a JSON IPC socket, and pushes incremental updates to every connected browser over WebSocket. `ffmpeg` / `ffprobe` do the heavy media work in the background at idle CPU and I/O priority, so playback always keeps the cores — see [docs/pi-optimization.md](docs/pi-optimization.md) for the priority model and the progressive-ingestion contract.
 
 ### Why a Raspberry Pi
 
@@ -196,11 +196,12 @@ The flip side is the nice part: the optimization is for the floor, not a ceiling
 
 The reference target is a Raspberry Pi 3B+ with 1 GB of RAM, and the design reflects that:
 
+- **Playout always wins the CPU.** The service — and the `cage` + `mpv` chain it spawns — runs at an elevated scheduler priority, while background `ffmpeg` renices itself to idle CPU and I/O (`nice` + `ionice`) with capped decode threads. Even a bulk import mid-show cannot starve decode. See [docs/pi-optimization.md](docs/pi-optimization.md).
 - **No work in steady state.** Once a clip is playing, DeckPilot does not touch SQLite (in-memory caches, invalidated on write) and does not fork processes.
 - **No needless broadcasts.** A WebSocket update goes out only when state actually changed, and one JSON encode serves every browser.
 - **Kind to SD cards.** SQLite runs in WAL mode and HTTP access logs are off, so the card sees far fewer writes.
 - **Bounded memory.** mpv's demuxer cache is capped for 1 GB boards; imports use single-frame thumbnail extraction with a capped worker pool, so playout keeps headroom.
-- **No frontend framework.** The UI is vanilla HTML / CSS / JS with DOM reuse and list virtualization — no build step.
+- **No frontend framework.** The UI is vanilla HTML / CSS / JS with DOM reuse and list virtualization — no build step, and the text assets are gzipped so the first load is a few KB.
 
 **Stack:** Python 3.9+ · FastAPI + Uvicorn · asyncio TCP · SQLite · mpv (JSON IPC) · ffmpeg.
 
@@ -214,7 +215,7 @@ The reference target is a Raspberry Pi 3B+ with 1 GB of RAM, and the design refl
 curl -fsSL https://raw.githubusercontent.com/JulesMellot/deckpilot/main/scripts/bootstrap.sh | bash
 ```
 
-Run it from your normal user account — do **not** `sudo su` into a root shell first. On a Pi the bootstrap also installs the systemd service, the HDMI boot-info screen, and a small privileged helper that lets web-triggered updates reboot the Pi when an update touches appliance-level components.
+Run it from your normal user account — do **not** `sudo su` into a root shell first. On a Pi the bootstrap also installs the systemd service, the HDMI boot-info screen, an SMB share of the clips folder (`\\<pi>\DeckPilot`, guest write — skip it with `--skip-smb`), and a small privileged helper that lets web-triggered updates reboot the Pi when an update touches appliance-level components.
 
 ### Windows (experimental)
 

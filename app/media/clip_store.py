@@ -5,6 +5,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -445,6 +446,79 @@ class ClipStore:
             'is_vertical': bool(height and width and height > width),
         }
 
+    def _conform_target(self) -> tuple[int, int]:
+        """Target (width, height) for the conform pass, parsed from
+        default_video_format (e.g. '1080p25' -> 1920x1080, '720p50' -> 1280x720).
+        16:9 is assumed; both dimensions are kept even for yuv420."""
+        match = re.match(r'(\d+)', (self.config.default_video_format or '').strip())
+        height = int(match.group(1)) if match else 1080
+        if height <= 0:
+            height = 1080
+        width = round(height * 16 / 9)
+        width -= width % 2
+        return width, height
+
+    def _conform_needed(self, meta: dict) -> bool:
+        """A video needs conforming unless it is already H.264 at the target
+        resolution — the only combination the Pi plays 1:1 full screen."""
+        if not self.config.conform_clips:
+            return False
+        if meta.get('media_kind') != 'video':
+            return False
+        target_w, target_h = self._conform_target()
+        return not (
+            str(meta.get('codec', '')).lower() == 'h264'
+            and int(meta.get('width') or 0) == target_w
+            and int(meta.get('height') or 0) == target_h
+        )
+
+    def _conform_command(self, src: Path, dst: Path, encoder: str) -> list[str]:
+        target_w, target_h = self._conform_target()
+        # Fit inside the frame keeping aspect, then pad to exactly target size so
+        # the result plays 1:1 with baked-in letterbox/pillarbox bars.
+        video_filter = (
+            f'scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,'
+            f'pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2,format=yuv420p'
+        )
+        return [
+            self.config.ffmpeg_binary, '-y', '-hide_banner', '-loglevel', 'error',
+            '-i', str(src),
+            '-vf', video_filter,
+            '-c:v', encoder, '-b:v', '8M',
+            '-c:a', 'aac', '-b:a', '192k',
+            # Force the mp4 muxer: h264/aac is valid regardless of the original
+            # extension, and mpv probes by content so the filename can stay.
+            '-f', 'mp4',
+            str(dst),
+        ]
+
+    def _conform_clip_sync(self, file_path: Path, meta: dict) -> bool:
+        """Scale + letterbox a video to the project format and re-encode to
+        H.264, replacing the file in place. Returns True when it was rewritten.
+        Tries the configured (hardware) encoder first, then libx264."""
+        if not self._conform_needed(meta):
+            return False
+        if not shutil.which(self.config.ffmpeg_binary):
+            return False
+        tmp = file_path.with_name(file_path.name + '.conforming')
+        encoders = [self.config.conform_encoder or 'h264_v4l2m2m']
+        if 'libx264' not in encoders:
+            encoders.append('libx264')
+        for encoder in encoders:
+            tmp.unlink(missing_ok=True)
+            try:
+                result = subprocess.run(
+                    self._conform_command(file_path, tmp, encoder),
+                    check=False, capture_output=True, text=True, timeout=3600,
+                )
+            except subprocess.TimeoutExpired:
+                break
+            if result.returncode == 0 and tmp.exists() and tmp.stat().st_size > 0:
+                os.replace(tmp, file_path)
+                return True
+        tmp.unlink(missing_ok=True)
+        return False
+
     def _metadata_needs_refresh(self, row: sqlite3.Row) -> bool:
         expected_kind = self._media_kind_for_path(Path(row['filepath']))
         return (
@@ -558,6 +632,11 @@ class ClipStore:
         if not file_path.exists():
             return False
         meta = self._probe_clip(file_path)
+        # Conform off-format clips to the project resolution/codec first: on a Pi
+        # the player can't scale live, so the file itself must match. Re-probe so
+        # the stored metadata and thumbnail reflect the conformed file.
+        if self._conform_clip_sync(file_path, meta):
+            meta = self._probe_clip(file_path)
         media_kind = meta.get('media_kind', self._media_kind_for_path(file_path))
         thumb = self._generate_thumbnail(file_path)
         audio_levels = self._compute_audio_levels(file_path) if media_kind == 'video' else []

@@ -345,6 +345,9 @@ data.update(
 compositor = os.environ.get("COMPOSITOR", "").strip()
 if compositor:
     data["mpv_compositor"] = compositor
+    # Same hardware limit drives both: a Pi can't scale video live, so conform
+    # off-format clips to the project resolution at import.
+    data["conform_clips"] = True
 
 config_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 PY

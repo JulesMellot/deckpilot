@@ -16,6 +16,8 @@
   "mpv_hwdec": "auto-safe",
   "mpv_hwdec_h264": "",
   "mpv_compositor": "",
+  "conform_clips": false,
+  "conform_encoder": "h264_v4l2m2m",
   "ffmpeg_binary": "ffmpeg",
   "ffprobe_binary": "ffprobe",
   "default_video_format": "1080p25",

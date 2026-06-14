@@ -41,6 +41,15 @@ class AppConfig:
     # out on a hardware plane, which is the only fluid 1080p path. The value is
     # split on spaces, so flags are allowed (e.g. "cage -d").
     mpv_compositor: str = ""
+    # Conform imported video clips to the project format at import time: scale +
+    # letterbox to `default_video_format`'s resolution and re-encode to H.264, so
+    # every clip plays 1:1 full screen. Required on hardware that cannot scale
+    # video live (e.g. Pi 3 + dmabuf-wayland, where the VC4 has no plane scaler).
+    # Clips already H.264 at the target resolution pass through untouched.
+    conform_clips: bool = False
+    # Encoder for the conform pass. The Pi's hardware H.264 encoder keeps it near
+    # real time; the code falls back to libx264 if this encoder fails.
+    conform_encoder: str = "h264_v4l2m2m"
     ffmpeg_binary: str = "ffmpeg"
     ffprobe_binary: str = "ffprobe"
     default_video_format: str = "1080p25"
@@ -74,6 +83,14 @@ def _merge_dict(target: Dict[str, Any], source: Dict[str, Any]) -> Dict[str, Any
     return merged
 
 
+def _env_bool(name: str) -> bool | None:
+    """Parse a boolean env var; None when unset so it doesn't override config."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def load_config() -> AppConfig:
     defaults = AppConfig()
     config_path = os.environ.get("PIDECK_CONFIG", str(Path.cwd() / "config.json"))
@@ -97,6 +114,8 @@ def load_config() -> AppConfig:
         "mpv_hwdec": os.environ.get("PIDECK_MPV_HWDEC"),
         "mpv_hwdec_h264": os.environ.get("PIDECK_MPV_HWDEC_H264"),
         "mpv_compositor": os.environ.get("PIDECK_MPV_COMPOSITOR"),
+        "conform_clips": _env_bool("PIDECK_CONFORM_CLIPS"),
+        "conform_encoder": os.environ.get("PIDECK_CONFORM_ENCODER"),
         "media_enrichment_workers": int(os.environ["PIDECK_MEDIA_ENRICHMENT_WORKERS"]) if os.environ.get("PIDECK_MEDIA_ENRICHMENT_WORKERS") else None,
         "default_image_duration_seconds": float(os.environ["PIDECK_DEFAULT_IMAGE_DURATION_SECONDS"]) if os.environ.get("PIDECK_DEFAULT_IMAGE_DURATION_SECONDS") else None,
         "watch_folder_seconds": float(os.environ["PIDECK_WATCH_FOLDER_SECONDS"]) if os.environ.get("PIDECK_WATCH_FOLDER_SECONDS") else None,

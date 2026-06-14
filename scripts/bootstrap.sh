@@ -491,17 +491,22 @@ install_systemd_service() {
   local service_name="deckpilot.service"
   local service_path="/etc/systemd/system/$service_name"
 
-  # On a Pi/SBC, mpv runs under cage (see write_config). cage needs the _seatd
-  # group to acquire the DRM seat headlessly and a writable XDG_RUNTIME_DIR for
-  # its Wayland socket; seatd must be running first.
+  # On a Pi/SBC, mpv runs under cage (see write_config). cage acquires the DRM
+  # seat via seatd and needs a writable XDG_RUNTIME_DIR for its Wayland socket;
+  # seatd must be running first.
   local svc_groups="audio video render input"
   local svc_after=""
   local svc_extra=""
   if is_linux_sbc; then
-    svc_groups="audio video render input _seatd"
     svc_after=" seatd.service"
     svc_extra=$'RuntimeDirectory=deckpilot\nRuntimeDirectoryMode=0700\nEnvironment=XDG_RUNTIME_DIR=/run/deckpilot\n'
     $SUDO systemctl enable --now seatd 2>/dev/null || true
+    # Raspberry Pi OS runs `seatd -g video`, so the `video` group above already
+    # grants seat access. Some distros use a dedicated `_seatd` group instead —
+    # add it only if it exists, else systemd fails with status=216/GROUP.
+    if getent group _seatd >/dev/null 2>&1; then
+      svc_groups="$svc_groups _seatd"
+    fi
   fi
 
   $SUDO tee "$service_path" >/dev/null <<EOF

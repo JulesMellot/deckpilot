@@ -6,9 +6,10 @@ Wants=network-online.target seatd.service
 [Service]
 Type=simple
 User=pi
-# video/render/input: DRM + the VideoCore decoder; _seatd: lets the nested
-# Wayland compositor (cage) acquire the seat without a login session.
-SupplementaryGroups=audio video render input _seatd
+# video/render/input: DRM + the VideoCore decoder. On Raspberry Pi OS seatd
+# runs `seatd -g video`, so `video` also lets the nested Wayland compositor
+# (cage) acquire the seat without a login session.
+SupplementaryGroups=audio video render input
 WorkingDirectory=/home/pi/pideck
 # cage needs a writable XDG_RUNTIME_DIR for its Wayland socket; RuntimeDirectory
 # creates /run/deckpilot owned by this user. Only used when mpv_compositor is set.

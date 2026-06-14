@@ -31,8 +31,16 @@ class AppConfig:
     # hwdec used specifically for H.264 clips. Empty = auto-detect: on a Pi
     # (Linux + /dev/video10) it resolves to "v4l2m2m-copy" to drive the
     # VideoCore H.264 decoder, otherwise it falls back to `mpv_hwdec`. Set it
-    # explicitly (e.g. "drm" or "no") to override the auto-detection.
+    # explicitly (e.g. "drm" or "no") to override the auto-detection. When
+    # `mpv_compositor` is set the auto-detect picks zero-copy "v4l2m2m" instead.
     mpv_hwdec_h264: str = ""
+    # Optional nested Wayland compositor that wraps mpv (e.g. "cage"). Empty =
+    # launch mpv directly on DRM/KMS. On a Pi 3 the direct overlay is rejected
+    # by the VC4 and the GL renderer drops frames at 1080p; running mpv as a
+    # client of a compositor with --vo=dmabuf-wayland scans the decoded frame
+    # out on a hardware plane, which is the only fluid 1080p path. The value is
+    # split on spaces, so flags are allowed (e.g. "cage -d").
+    mpv_compositor: str = ""
     ffmpeg_binary: str = "ffmpeg"
     ffprobe_binary: str = "ffprobe"
     default_video_format: str = "1080p25"
@@ -88,6 +96,7 @@ def load_config() -> AppConfig:
         "audio_device": os.environ.get("PIDECK_AUDIO_DEVICE"),
         "mpv_hwdec": os.environ.get("PIDECK_MPV_HWDEC"),
         "mpv_hwdec_h264": os.environ.get("PIDECK_MPV_HWDEC_H264"),
+        "mpv_compositor": os.environ.get("PIDECK_MPV_COMPOSITOR"),
         "media_enrichment_workers": int(os.environ["PIDECK_MEDIA_ENRICHMENT_WORKERS"]) if os.environ.get("PIDECK_MEDIA_ENRICHMENT_WORKERS") else None,
         "default_image_duration_seconds": float(os.environ["PIDECK_DEFAULT_IMAGE_DURATION_SECONDS"]) if os.environ.get("PIDECK_DEFAULT_IMAGE_DURATION_SECONDS") else None,
         "watch_folder_seconds": float(os.environ["PIDECK_WATCH_FOLDER_SECONDS"]) if os.environ.get("PIDECK_WATCH_FOLDER_SECONDS") else None,

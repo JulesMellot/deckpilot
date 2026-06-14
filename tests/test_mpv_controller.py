@@ -125,6 +125,41 @@ class MPVControllerAudioDeviceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('--hwdec=auto-safe', command)
 
 
+class MPVControllerCompositorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_compositor_wraps_mpv_as_a_dmabuf_wayland_client(self) -> None:
+        controller = MPVController(AppConfig(mpv_compositor='cage'))
+
+        profiles = controller._startup_profiles(Path('/tmp/mpv-test.log'))
+
+        # A single profile: the compositor launches mpv, no direct DRM/GL fallbacks.
+        self.assertEqual(len(profiles), 1)
+        name, command = profiles[0]
+        self.assertEqual(name, 'compositor')
+        # `cage -- mpv ...`: mpv stays the child so the IPC socket still works.
+        self.assertEqual(command[0], 'cage')
+        self.assertEqual(command[1], '--')
+        self.assertEqual(command[2], 'mpv')
+        self.assertIn('--vo=dmabuf-wayland', command)
+        # The direct-DRM video outputs must not be requested under the compositor.
+        self.assertFalse(any(arg.startswith('--gpu-context=') for arg in command))
+
+    async def test_compositor_value_is_split_on_spaces(self) -> None:
+        controller = MPVController(AppConfig(mpv_compositor='cage -d'))
+
+        _, command = controller._startup_profiles(Path('/tmp/mpv-test.log'))[0]
+
+        self.assertEqual(command[:3], ['cage', '-d', '--'])
+
+    async def test_no_compositor_keeps_direct_profiles(self) -> None:
+        controller = MPVController(AppConfig())
+
+        profiles = controller._startup_profiles(Path('/tmp/mpv-test.log'))
+
+        self.assertTrue(all(name != 'compositor' for name, _ in profiles))
+        for _, command in profiles:
+            self.assertEqual(command[0], 'mpv')
+
+
 class MPVControllerCodecHwdecTests(unittest.IsolatedAsyncioTestCase):
     async def test_explicit_h264_hwdec_is_used_for_h264_only(self) -> None:
         controller = MPVController(AppConfig(mpv_hwdec_h264='v4l2m2m-copy'))

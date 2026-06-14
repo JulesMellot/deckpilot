@@ -304,6 +304,11 @@ class MPVController:
         if configured:
             return configured
         if platform.system().lower() == 'linux' and Path('/dev/video10').exists():
+            # dmabuf-wayland needs zero-copy frames (drm_prime), so under a
+            # compositor use plain v4l2m2m; the direct-DRM/GL path cannot import
+            # those and needs the -copy variant instead.
+            if (self.config.mpv_compositor or '').strip():
+                return 'v4l2m2m'
             return 'v4l2m2m-copy'
         return None
 
@@ -348,6 +353,17 @@ class MPVController:
         drm_connector = None
         if self._selected_output_id and self._selected_output_id.startswith('drm:'):
             drm_connector = self._selected_output_id.split(':', 1)[1]
+
+        compositor = (self.config.mpv_compositor or '').strip()
+        if compositor:
+            # mpv runs as a client of a nested Wayland compositor (e.g. cage) and
+            # outputs via dmabuf-wayland, which the compositor scans out on a
+            # hardware plane. On a Pi 3 this is the only fluid 1080p path: the
+            # direct DRM overlay is rejected by the VC4 (atomic commit -22) and
+            # the GL renderer drops ~60% of frames at 1080p. `cage -- mpv ...`
+            # keeps mpv as the child, so the IPC socket still works.
+            wayland_args = [*compositor.split(), '--', *base_args, '--vo=dmabuf-wayland']
+            return [('compositor', wayland_args)]
 
         profiles: list[tuple[str, list[str]]] = [('default', list(base_args))]
         platform_name = platform.system().lower()

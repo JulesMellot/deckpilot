@@ -269,7 +269,10 @@ install_packages_linux() {
   # safe fallback on older ones.
   if command_exists apt-get; then
     $SUDO apt-get update
-    $SUDO apt-get install -y git curl rsync python3 python3-venv python3-pip ffmpeg mpv sqlite3 ntfs-3g exfatprogs
+    # cage + seatd: a Pi 3 only plays 1080p smoothly when mpv runs as a
+    # dmabuf-wayland client of a nested compositor (cage), with seatd granting
+    # the DRM seat to the headless service. Harmless extras on non-Pi Debian.
+    $SUDO apt-get install -y git curl rsync python3 python3-venv python3-pip ffmpeg mpv sqlite3 ntfs-3g exfatprogs cage seatd
   elif command_exists dnf; then
     $SUDO dnf install -y git curl rsync python3 python3-pip ffmpeg mpv sqlite ntfs-3g exfatprogs
   elif command_exists yum; then
@@ -307,7 +310,10 @@ clone_or_update_repo() {
 write_config() {
   local config_path="$INSTALL_DIR/config.json"
   local socket_path="/tmp/deckpilot-mpv.sock"
-  INSTALL_DIR="$INSTALL_DIR" CONFIG_PATH="$config_path" SOCKET_PATH="$socket_path" python3 <<'PY'
+  # On a Pi/SBC, run mpv under cage so 1080p plays via the hardware plane.
+  local compositor=""
+  is_linux_sbc && compositor="cage"
+  INSTALL_DIR="$INSTALL_DIR" CONFIG_PATH="$config_path" SOCKET_PATH="$socket_path" COMPOSITOR="$compositor" python3 <<'PY'
 import json
 import os
 from pathlib import Path
@@ -335,6 +341,10 @@ data.update(
         "mpv_log_path": str(data_dir / "mpv.log"),
     }
 )
+
+compositor = os.environ.get("COMPOSITOR", "").strip()
+if compositor:
+    data["mpv_compositor"] = compositor
 
 config_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 PY
@@ -481,20 +491,33 @@ install_systemd_service() {
   local service_name="deckpilot.service"
   local service_path="/etc/systemd/system/$service_name"
 
+  # On a Pi/SBC, mpv runs under cage (see write_config). cage needs the _seatd
+  # group to acquire the DRM seat headlessly and a writable XDG_RUNTIME_DIR for
+  # its Wayland socket; seatd must be running first.
+  local svc_groups="audio video render input"
+  local svc_after=""
+  local svc_extra=""
+  if is_linux_sbc; then
+    svc_groups="audio video render input _seatd"
+    svc_after=" seatd.service"
+    svc_extra=$'RuntimeDirectory=deckpilot\nRuntimeDirectoryMode=0700\nEnvironment=XDG_RUNTIME_DIR=/run/deckpilot\n'
+    $SUDO systemctl enable --now seatd 2>/dev/null || true
+  fi
+
   $SUDO tee "$service_path" >/dev/null <<EOF
 [Unit]
 Description=DeckPilot HyperDeck Emulator
 # network.target (not network-online.target): waiting for *-wait-online can
 # stall boot by 60-120s on a Pi with slow DHCP; DeckPilot binds 0.0.0.0 and
 # does not need the network to be fully up.
-After=network.target
+After=network.target${svc_after}
 
 [Service]
 Type=simple
 User=$RUN_USER
-SupplementaryGroups=audio video render input
+SupplementaryGroups=$svc_groups
 WorkingDirectory=$INSTALL_DIR
-Environment=PIDECK_CONFIG=$INSTALL_DIR/config.json
+${svc_extra}Environment=PIDECK_CONFIG=$INSTALL_DIR/config.json
 ExecStart=$INSTALL_DIR/.venv/bin/python -m app.main
 Restart=always
 RestartSec=3

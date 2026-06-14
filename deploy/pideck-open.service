@@ -1,12 +1,20 @@
 [Unit]
 Description=DeckPilot HyperDeck Emulator
-After=network-online.target
-Wants=network-online.target
+After=network-online.target seatd.service
+Wants=network-online.target seatd.service
 
 [Service]
 Type=simple
 User=pi
+# video/render/input: DRM + the VideoCore decoder; _seatd: lets the nested
+# Wayland compositor (cage) acquire the seat without a login session.
+SupplementaryGroups=audio video render input _seatd
 WorkingDirectory=/home/pi/pideck
+# cage needs a writable XDG_RUNTIME_DIR for its Wayland socket; RuntimeDirectory
+# creates /run/deckpilot owned by this user. Only used when mpv_compositor is set.
+RuntimeDirectory=deckpilot
+RuntimeDirectoryMode=0700
+Environment=XDG_RUNTIME_DIR=/run/deckpilot
 Environment=PIDECK_CONFIG=/home/pi/pideck/config.json
 ExecStart=/home/pi/pideck/.venv/bin/python -m app.main
 Restart=always

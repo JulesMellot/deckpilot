@@ -15,6 +15,7 @@
   "mpv_binary": "mpv",
   "mpv_hwdec": "auto-safe",
   "mpv_hwdec_h264": "",
+  "mpv_compositor": "",
   "ffmpeg_binary": "ffmpeg",
   "ffprobe_binary": "ffprobe",
   "default_video_format": "1080p25",

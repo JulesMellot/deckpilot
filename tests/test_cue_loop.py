@@ -91,7 +91,7 @@ class FakeClipStore:
     async def list_folders(self) -> list[str]:
         return ['All']
 
-    async def sync_with_disk(self) -> None:
+    async def sync_with_disk(self, settle_paths: set[str] | None = None) -> None:
         return None
 
     async def set_loop(self, deck_id: int, enabled: bool) -> FakeClip | None:

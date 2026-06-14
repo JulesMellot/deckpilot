@@ -9,9 +9,28 @@ from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.types import ASGIApp, Receive, Scope, Send
+
+
+class SelectiveGZipMiddleware:
+    """GZip only the text UI (HTML/CSS/JS/JSON). Media and thumbnails are
+    already-compressed binaries — gzipping them on a Pi 3 would burn CPU for no
+    size gain and fight playback while the operator scrubs the browser preview.
+    Path-gated at the ASGI layer so streaming file responses stay intact."""
+
+    def __init__(self, app: ASGIApp, minimum_size: int = 1024) -> None:
+        self.app = app
+        self._gzip = GZipMiddleware(app, minimum_size=minimum_size)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope['type'] == 'http' and not scope['path'].startswith(('/media/', '/thumbs/')):
+            await self._gzip(scope, receive, send)
+        else:
+            await self.app(scope, receive, send)
 
 from app.core.state import AppState
 from app.media.clip_store import ClipStore
@@ -181,10 +200,15 @@ def build_app(
     app.add_middleware(
         CORSMiddleware,
         allow_origins=['*'],
-        allow_credentials=True,
+        # No cookie/session auth here, so credentials are not needed — and a
+        # wildcard origin with credentials is rejected by browsers anyway.
+        allow_credentials=False,
         allow_methods=['*'],
         allow_headers=['*'],
     )
+    # Compress the text UI on the way out; first load of app.js + styles.css
+    # drops from ~120 KB to ~30 KB. Repeat loads already hit the immutable cache.
+    app.add_middleware(SelectiveGZipMiddleware, minimum_size=1024)
 
     static_dir = Path(__file__).resolve().parent.parent / 'static'
     app.mount('/static', StaticFiles(directory=static_dir), name='static')

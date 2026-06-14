@@ -6,6 +6,14 @@ Wants=network-online.target seatd.service
 [Service]
 Type=simple
 User=pi
+# Lift the whole playback chain above everything else on the Pi: this process
+# spawns cage, cage spawns mpv, and both inherit this niceness, so decode and
+# render always win the CPU. Background ffmpeg enrichment renices itself +19
+# *relative* in-process, landing well below this (~14) — never starving mpv.
+Nice=-5
+# A playout deck must not be the OOM killer's first pick on a 1 GB Pi 3 when a
+# large import spikes memory; bias the killer firmly away from it.
+OOMScoreAdjust=-400
 # video/render/input: DRM + the VideoCore decoder. On Raspberry Pi OS seatd
 # runs `seatd -g video`, so `video` also lets the nested Wayland compositor
 # (cage) acquire the seat without a login session.

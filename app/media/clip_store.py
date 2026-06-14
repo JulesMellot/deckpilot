@@ -35,6 +35,30 @@ def _path_under(root: str, path: str) -> bool:
     return path == root or path.startswith(root + os.sep)
 
 
+# Background media work (ffprobe, thumbnails, conform re-encode, audio levels)
+# must never starve mpv: the deck stays on air during imports. We renice the
+# child to the lowest CPU priority and, when `ionice` is present (Linux/Pi),
+# drop its disk I/O to the idle class, so a full-file re-encode cannot steal
+# cores or stall SD-card reads from the clip that is playing.
+_BACKGROUND_NICE = 19
+
+
+def _background_preexec() -> None:  # POSIX only; never passed on Windows.
+    with contextlib.suppress(OSError):
+        os.nice(_BACKGROUND_NICE)
+
+
+def _background_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+    """Run a background media subprocess at idle CPU (and, on Linux, idle I/O)
+    priority so it yields to playback. Cross-platform safe: the renice is POSIX
+    only and the I/O class prefix is added only when `ionice` exists."""
+    if os.name == 'posix':
+        kwargs.setdefault('preexec_fn', _background_preexec)
+        if shutil.which('ionice'):
+            cmd = ['ionice', '-c3', *cmd]
+    return subprocess.run(cmd, **kwargs)
+
+
 class ClipStore:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
@@ -227,13 +251,22 @@ class ClipStore:
                 files.append(path)
         return files, scanned_roots
 
-    async def sync_with_disk(self) -> None:
-        pending_paths = await asyncio.to_thread(self._sync_with_disk_sync)
+    async def sync_with_disk(self, settle_paths: set[str] | None = None) -> None:
+        pending_paths = await asyncio.to_thread(self._sync_with_disk_sync, settle_paths)
         await self._enqueue_enrichment_paths(pending_paths)
 
-    def _sync_with_disk_sync(self) -> list[str]:
+    def _sync_with_disk_sync(self, settle_paths: set[str] | None = None) -> list[str]:
         roots = self._source_roots()
         files, scanned_roots = self._scan_source_files(roots)
+        # When the watch folder passes a settle set, only files that have stopped
+        # changing across two scans are ingested; a clip still being copied over
+        # SMB/USB waits for a later pass instead of being probed half-written.
+        # Other callers (operator actions, startup) pass None and ingest all.
+        settled = None if settle_paths is None else {os.path.normpath(p) for p in settle_paths}
+
+        def _ready(path: Path) -> bool:
+            return settled is None or os.path.normpath(str(path)) in settled
+
         pending_paths: list[str] = []
         with self._connect() as conn:
             existing = {row['filename']: row for row in conn.execute('SELECT * FROM clips').fetchall()}
@@ -245,6 +278,10 @@ class ClipStore:
                     moved = os.path.normpath(row['filepath']) != os.path.normpath(str(file_path))
                     needs_meta_refresh = self._metadata_needs_refresh(row)
                     needs_thumb_refresh = self._thumbnail_needs_refresh(file_path, row['thumbnail_path'])
+                    if (moved or needs_meta_refresh or needs_thumb_refresh) and not _ready(file_path):
+                        # A re-copied / relocated file that is still settling:
+                        # leave its row untouched until a later, stable pass.
+                        continue
                     if moved:
                         # The file now lives on a different disk (e.g. the clip
                         # was copied to a USB drive): re-point and re-probe it.
@@ -259,6 +296,10 @@ class ClipStore:
                             ('pending', file_path.name),
                         )
                         pending_paths.append(str(file_path))
+                    continue
+                # A brand-new file still being written stays out of the library
+                # until it settles, so the operator never sees a half-copied clip.
+                if not _ready(file_path):
                     continue
                 sort_seed += 1
                 conn.execute(
@@ -394,7 +435,7 @@ class ClipStore:
             source,
         ]
         try:
-            result = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=timeout)
+            result = _background_run(cmd, check=False, capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired:
             # A slow / unreachable stream falls back to an open-ended source.
             return {
@@ -482,6 +523,9 @@ class ClipStore:
         )
         return [
             self.config.ffmpeg_binary, '-y', '-hide_banner', '-loglevel', 'error',
+            # Cap worker threads so the libx264 fallback cannot grab all four Pi
+            # cores away from mpv; the hardware encoder ignores this anyway.
+            '-threads', '2',
             '-i', str(src),
             '-vf', video_filter,
             '-c:v', encoder, '-b:v', '8M',
@@ -507,7 +551,7 @@ class ClipStore:
         for encoder in encoders:
             tmp.unlink(missing_ok=True)
             try:
-                result = subprocess.run(
+                result = _background_run(
                     self._conform_command(file_path, tmp, encoder),
                     check=False, capture_output=True, text=True, timeout=3600,
                 )
@@ -563,7 +607,7 @@ class ClipStore:
             '-1',
             str(output),
         ])
-        subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
+        _background_run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
 
     def _thumbnail_output_path(self, file_path: Path) -> Path:
         stats = file_path.stat()
@@ -689,6 +733,10 @@ class ClipStore:
             '-nostats',
             '-v',
             'error',
+            # Single decode thread: the whole file is read end-to-end, so cap it
+            # to leave the other Pi cores free for playback.
+            '-threads',
+            '1',
             '-i',
             str(file_path),
             '-vn',
@@ -700,7 +748,7 @@ class ClipStore:
             '-',
         ]
         try:
-            result = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=600)
+            result = _background_run(cmd, check=False, capture_output=True, text=True, timeout=600)
         except subprocess.TimeoutExpired:
             return []
         return parse_rms_levels(result.stdout)
@@ -998,7 +1046,7 @@ class ClipStore:
             cmd.extend(['-i', url, '-frames:v', '1', '-vf', 'scale=256:-2:flags=lanczos',
                         '-q:v', '6', '-map_metadata', '-1', str(output)])
             with contextlib.suppress(subprocess.TimeoutExpired, OSError):
-                subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+                _background_run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
 
         grab(1.0)
         if not output.exists():

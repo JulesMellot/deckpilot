@@ -19,8 +19,9 @@ class FakeController:
     def __init__(self) -> None:
         self.refresh_count = 0
 
-    async def refresh_clips(self) -> None:
+    async def refresh_clips(self, settle_paths: set[str] | None = None) -> None:
         self.refresh_count += 1
+        self.last_settle_paths = settle_paths
 
 
 class WatchFolderTests(unittest.IsolatedAsyncioTestCase):
@@ -63,6 +64,32 @@ class WatchFolderTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(await self.service.tick())  # nothing new
         self.assertEqual(self.controller.refresh_count, 1)
+
+    async def test_bulk_drop_ingests_each_file_as_it_settles(self) -> None:
+        # A finished file and one still being copied land together. The finished
+        # one must be ingested without waiting for the slow copy to complete, and
+        # only settled paths are handed to the controller.
+        done = Path(self.config.clips_dir) / 'done.mp4'
+        slow = Path(self.config.clips_dir) / 'slow.mp4'
+        done.write_bytes(b'finished-clip')
+        slow.write_bytes(b'first-chunk')
+
+        self.assertFalse(await self.service.tick())  # first sight of both
+        slow.write_bytes(b'first-chunk-plus-more')   # slow file keeps growing
+
+        self.assertTrue(await self.service.tick())   # done settles, slow does not
+        self.assertEqual(self.controller.refresh_count, 1)
+        self.assertIn(str(done), self.controller.last_settle_paths)
+        self.assertNotIn(str(slow), self.controller.last_settle_paths)
+        self.assertIn(str(done), self.service._ingested)
+        self.assertNotIn(str(slow), self.service._ingested)
+        self.assertEqual(self.service.pending_files, 1)  # slow still copying
+
+        self.assertTrue(await self.service.tick())   # slow finally settles
+        self.assertEqual(self.controller.refresh_count, 2)
+        self.assertIn(str(slow), self.controller.last_settle_paths)
+        self.assertIn(str(slow), self.service._ingested)
+        self.assertEqual(self.service.pending_files, 0)
 
     async def test_unsupported_extension_is_ignored(self) -> None:
         (Path(self.config.clips_dir) / 'notes.txt').write_text('hello')

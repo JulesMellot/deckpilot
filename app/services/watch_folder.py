@@ -98,27 +98,44 @@ class WatchFolderService:
 
         previous = self._last_scan
         self._last_scan = scan
-        if self._ingested is not None:
-            self.pending_files = sum(1 for name in scan if name not in self._ingested)
-        stable = previous is not None and scan == previous and scan != self._ingested
-        if not stable and not roots_changed:
+        ingested = self._ingested or {}
+
+        # Per-file stability: a path is settled once its size+mtime are identical
+        # across two consecutive scans. A big drop is ingested progressively —
+        # each file joins the enrichment queue the moment *it* finishes copying,
+        # instead of holding the whole batch until the last byte of the last file.
+        settled = {path for path, value in scan.items() if previous is not None and previous.get(path) == value}
+        # Newly settled files (or files re-copied to a new size/mtime) to ingest.
+        ready = {path: scan[path] for path in settled if ingested.get(path) != scan[path]}
+        # Treat a file as removed only once it is absent for two consecutive scans,
+        # so a one-tick flap (USB re-enumeration) is never read as a deletion.
+        removed = [path for path in ingested if path not in scan and path not in (previous or {})]
+
+        # Anything seen but not yet settled is still copying: surface it as pending.
+        self.pending_files = sum(1 for path, value in scan.items() if path not in settled and ingested.get(path) != value)
+
+        if not ready and not removed and not roots_changed:
             return False
-        added = [name for name in scan if self._ingested is None or name not in self._ingested]
-        removed = [name for name in (self._ingested or {}) if name not in scan]
-        self._ingested = scan
-        self.pending_files = 0
-        if added or removed:
+
+        for path, value in ready.items():
+            ingested[path] = value
+        for path in removed:
+            ingested.pop(path, None)
+        self._ingested = ingested
+
+        if ready or removed:
             self.last_ingest_at = time.time()
             self.ingest_count += 1
-        if added:
-            names = sorted(os.path.basename(path) for path in added)
-            await self.state.add_log('info', 'media', f'Watch folder: ingesting {len(added)} new file(s): {", ".join(names[:5])}')
+        if ready:
+            names = sorted(os.path.basename(path) for path in ready)
+            await self.state.add_log('info', 'media', f'Watch folder: ingesting {len(ready)} new file(s): {", ".join(names[:5])}')
         if removed:
             await self.state.add_log('info', 'media', f'Watch folder: {len(removed)} file(s) removed from disk.')
-        # Refresh on a drive appearing / disappearing too, so clips flip
-        # online / offline even when their file set is unchanged.
-        if added or removed or roots_changed:
-            await self.controller.refresh_clips()
+        # Hand the controller only the settled paths so still-copying files in the
+        # same batch are left for a later tick. Drive appear/disappear also forces
+        # a refresh so clips flip online / offline even when their set is unchanged.
+        if ready or removed or roots_changed:
+            await self.controller.refresh_clips(settle_paths=settled)
         return True
 
     def _source_roots(self) -> list[str]:

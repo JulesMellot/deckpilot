@@ -9,6 +9,7 @@ APP_NAME="DeckPilot"
 ASSUME_YES=0
 SERVICE_MODE="ask"
 BOOT_INFO_MODE="auto"
+SMB_MODE="ask"
 UI_DEMO=0
 LOG_FILE="$(mktemp -t deckpilot-install.XXXXXX.log 2>/dev/null || echo /tmp/deckpilot-install.log)"
 
@@ -163,6 +164,8 @@ Options:
   --skip-service         Do not install a systemd service
   --install-boot-info    Install the HDMI boot info service on supported Linux SBCs
   --skip-boot-info       Do not install the HDMI boot info service
+  --install-smb          Share the clips folder over SMB (network file drop)
+  --skip-smb             Do not configure the SMB clip share
   -h, --help             Show this help
 EOF
 }
@@ -176,6 +179,8 @@ while [[ $# -gt 0 ]]; do
     --skip-service) SERVICE_MODE="no"; shift ;;
     --install-boot-info) BOOT_INFO_MODE="yes"; shift ;;
     --skip-boot-info) BOOT_INFO_MODE="no"; shift ;;
+    --install-smb) SMB_MODE="yes"; shift ;;
+    --skip-smb) SMB_MODE="no"; shift ;;
     --ui-demo) UI_DEMO=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "Unknown argument: $1" ;;
@@ -489,6 +494,54 @@ configure_console_boot() {
   fi
 }
 
+configure_samba() {
+  # Share the clips folder over SMB so an operator can drop files straight from
+  # a laptop. The watch folder then ingests them progressively as each finishes
+  # copying. Guest access keeps it friction-free on a trusted production LAN;
+  # `force user` makes every drop land owned by the app so it can conform/delete.
+  command_exists apt-get || return 0
+  local clips_dir="$INSTALL_DIR/runtime/clips"
+  $SUDO mkdir -p "$clips_dir"
+  $SUDO chown -R "$RUN_USER" "$clips_dir" 2>/dev/null || true
+
+  if ! command_exists smbd; then
+    $SUDO apt-get install -y samba >/dev/null 2>&1 || return 0
+  fi
+
+  local smb_conf="/etc/samba/smb.conf"
+  [[ -f "$smb_conf" ]] || $SUDO touch "$smb_conf"
+  # Idempotent: strip any previous DeckPilot block before appending a fresh one,
+  # so re-running the installer (or changing the path) never duplicates it.
+  $SUDO sed -i '/# >>> DeckPilot share >>>/,/# <<< DeckPilot share <<</d' "$smb_conf" 2>/dev/null || true
+  $SUDO tee -a "$smb_conf" >/dev/null <<EOF
+# >>> DeckPilot share >>>
+[global]
+   map to guest = Bad User
+   server min protocol = SMB2
+
+[DeckPilot]
+   comment = DeckPilot clips
+   path = $clips_dir
+   browseable = yes
+   read only = no
+   guest ok = yes
+   force user = $RUN_USER
+   create mask = 0664
+   directory mask = 0775
+# <<< DeckPilot share <<<
+EOF
+
+  # Reject a broken config rather than leaving smbd down.
+  if command_exists testparm && ! $SUDO testparm -s "$smb_conf" >/dev/null 2>&1; then
+    warn "Samba config check failed; SMB share not enabled."
+    return 0
+  fi
+  $SUDO systemctl enable smbd >/dev/null 2>&1 || true
+  $SUDO systemctl restart smbd >/dev/null 2>&1 || true
+  # nmbd advertises the host over NetBIOS so it shows up in network browsers.
+  $SUDO systemctl restart nmbd >/dev/null 2>&1 || true
+}
+
 install_systemd_service() {
   command_exists systemctl || return 0
   local service_name="deckpilot.service"
@@ -523,6 +576,14 @@ After=network.target${svc_after}
 [Service]
 Type=simple
 User=$RUN_USER
+# Lift the whole playback chain above everything else on the Pi: this process
+# spawns cage, cage spawns mpv, and both inherit this niceness, so decode and
+# render always win the CPU. Background ffmpeg enrichment renices itself +19
+# *relative* in-process, landing well below this (~14) — never starving mpv.
+Nice=-5
+# A playout deck must not be the OOM killer's first pick on a 1 GB Pi 3 when a
+# large import spikes memory; bias the killer firmly away from it.
+OOMScoreAdjust=-400
 SupplementaryGroups=$svc_groups
 WorkingDirectory=$INSTALL_DIR
 ${svc_extra}Environment=PIDECK_CONFIG=$INSTALL_DIR/config.json
@@ -602,6 +663,9 @@ print_summary() {
   box_line "  Web UI        http://$host_display:8080" "$C_CYAN"
   box_line "  HyperDeck     $host_display:9993" "$C_CYAN"
   box_line "  Directory     $INSTALL_DIR"
+  if [[ "${DO_SMB:-no}" == "yes" ]]; then
+    box_line "  SMB drop      \\\\$host_display\\DeckPilot" "$C_CYAN"
+  fi
   if [[ "$DO_SERVICE" == "yes" ]]; then
     box_line "  Service       deckpilot.service (enabled)"
   else
@@ -650,9 +714,19 @@ printf '\n'
 # Decide the whole plan before running anything.
 DO_SERVICE="no"
 DO_BOOT_INFO="no"
+DO_SMB="no"
 if [[ "$OS_NAME" == "linux" ]] && command_exists systemctl; then
   if [[ "$SERVICE_MODE" == "yes" ]] || { [[ "$SERVICE_MODE" == "ask" ]] && ask_yes_no "Install DeckPilot as a systemd service?" "y"; }; then
     DO_SERVICE="yes"
+  fi
+  # Share the clips folder over SMB by default on Linux (apt only); it's the
+  # main way operators drop files onto an appliance.
+  if command_exists apt-get; then
+    if [[ "$SMB_MODE" == "no" ]]; then
+      DO_SMB="no"
+    elif [[ "$SMB_MODE" == "yes" ]] || { [[ "$SMB_MODE" == "ask" ]] && ask_yes_no "Share the clips folder over SMB (network drop)?" "y"; }; then
+      DO_SMB="yes"
+    fi
   fi
   if [[ "$BOOT_INFO_MODE" == "yes" ]]; then
     DO_BOOT_INFO="yes"
@@ -675,6 +749,7 @@ TOTAL_STEPS=4
 [[ "$OS_NAME" == "macos" ]] && ! command_exists brew && TOTAL_STEPS=$((TOTAL_STEPS + 1))
 [[ "$DO_SERVICE" == "yes" ]] && TOTAL_STEPS=$((TOTAL_STEPS + 1))
 [[ "$DO_BOOT_INFO" == "yes" ]] && TOTAL_STEPS=$((TOTAL_STEPS + 1))
+[[ "$DO_SMB" == "yes" ]] && TOTAL_STEPS=$((TOTAL_STEPS + 1))
 
 printf '\n'
 if [[ "$OS_NAME" == "linux" ]]; then
@@ -690,5 +765,6 @@ run_step "Python environment" setup_python_env
 run_step "Writing configuration" write_config
 [[ "$DO_SERVICE" == "yes" ]] && run_step "systemd service" install_systemd_service
 [[ "$DO_BOOT_INFO" == "yes" ]] && run_step "HDMI boot info service" install_boot_info_service
+[[ "$DO_SMB" == "yes" ]] && run_step "SMB clip share" configure_samba
 
 print_summary

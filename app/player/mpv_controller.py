@@ -32,6 +32,10 @@ class MPVController:
         self._output_width: int | None = None
         self._output_height: int | None = None
         self._h264_hwdec: str | None = self._detect_h264_hwdec()
+        # mpv keeps `speed` across loadfile, so we track the last value we set and
+        # only push a 1x reset on a fresh load when the previous clip left it
+        # off-speed — one fewer IPC round-trip on the common (1x) fire path.
+        self._last_speed: float = 1.0
         self.last_error: str | None = None
 
     def _ipc_path(self) -> str:
@@ -75,6 +79,8 @@ class MPVController:
                 try:
                     self._reader, self._writer = await self._open_ipc()
                     self.last_error = None
+                    # A fresh mpv process starts at 1x; keep the tracker in sync.
+                    self._last_speed = 1.0
                     await self._maximize_hardware_mixer()
                     return
                 except (ConnectionError, FileNotFoundError, OSError):
@@ -135,17 +141,14 @@ class MPVController:
         return bool(response and response.get('error') == 'success')
 
     async def play_file(self, path: str, loop: bool = False, is_vertical: bool = False, start: float = 0.0, codec: str | None = None) -> bool:
-        if not await self._command_ok(['set_property', 'vf', '']):
-            return False
         # Pick the decoder for this clip's codec before loading: H.264 gets the
         # Pi's hardware path, everything else the default. Set per-load because a
         # previous clip may have left a different hwdec in place.
         await self._command_ok(['set_property', 'hwdec', self._hwdec_for_codec(codec)])
-        # mpv keeps the speed property across loadfile, so every fresh start resets to 1x.
-        if not await self._command_ok(['set_property', 'speed', 1.0]):
+        # Only reset to 1x when the last clip left it off-speed (mpv keeps speed
+        # across loadfile); skipping the no-op saves an IPC round-trip on a fire.
+        if not await self._reset_speed():
             return False
-        # Stills are held until the deck controller decides to stop or advance.
-        await self._command_ok(['set_property', 'image-display-duration', 'inf'])
         # Load paused so we can seek to the in-mark before the first frame is shown.
         if not await self._command_ok(['set_property', 'pause', True]):
             return False
@@ -158,12 +161,9 @@ class MPVController:
         return await self._command_ok(['set_property', 'pause', False])
 
     async def cue_file(self, path: str, loop: bool = False, is_vertical: bool = False, start: float = 0.0, codec: str | None = None) -> bool:
-        if not await self._command_ok(['set_property', 'vf', '']):
-            return False
         await self._command_ok(['set_property', 'hwdec', self._hwdec_for_codec(codec)])
-        if not await self._command_ok(['set_property', 'speed', 1.0]):
+        if not await self._reset_speed():
             return False
-        await self._command_ok(['set_property', 'image-display-duration', 'inf'])
         if not await self._command_ok(['set_property', 'pause', True]):
             return False
         if not await self._command_ok(['loadfile', path, 'replace']):
@@ -175,10 +175,8 @@ class MPVController:
         return True
 
     async def show_standby(self, path: str) -> bool:
-        if not await self._command_ok(['set_property', 'vf', '']):
-            return False
-        # Hold the still slate indefinitely instead of advancing past it.
-        await self._command_ok(['set_property', 'image-display-duration', 'inf'])
+        # image-display-duration=inf is set at startup, so the slate is held
+        # indefinitely instead of advancing past it.
         if not await self._command_ok(['loadfile', path, 'replace']):
             return False
         if not await self.set_loop(False):
@@ -198,7 +196,18 @@ class MPVController:
         return await self._command_ok(['set_property', 'loop-file', 'inf' if enabled else 'no'])
 
     async def set_speed(self, factor: float) -> bool:
-        return await self._command_ok(['set_property', 'speed', float(factor)])
+        ok = await self._command_ok(['set_property', 'speed', float(factor)])
+        if ok:
+            self._last_speed = float(factor)
+        return ok
+
+    async def _reset_speed(self) -> bool:
+        """Return playback to 1x before a load, but only when the previous clip
+        left it off-speed. mpv carries `speed` across loadfile, so a fresh fire
+        after a normal-speed clip needs no IPC round-trip here."""
+        if self._last_speed == 1.0:
+            return True
+        return await self.set_speed(1.0)
 
     async def set_volume(self, value: int) -> bool:
         return await self._command_ok(['set_property', 'volume', value])
@@ -329,6 +338,10 @@ class MPVController:
             # Hold the last frame at EOF instead of flashing the idle screen; the
             # deck controller decides what happens next (stop / advance / hold).
             '--keep-open=always',
+            # Hold stills indefinitely; the deck controller decides when to
+            # advance. Set once here instead of per-load (mpv keeps it across
+            # loadfile), saving an IPC round-trip on every clip fire.
+            '--image-display-duration=inf',
             '--audio-display=no',
             '--terminal=no',
             '--no-config',

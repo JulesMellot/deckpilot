@@ -109,8 +109,8 @@ class DeckController:
     async def list_clips(self):
         return await self.clip_store.list_clips()
 
-    async def refresh_clips(self) -> None:
-        await self.clip_store.sync_with_disk()
+    async def refresh_clips(self, settle_paths: set[str] | None = None) -> None:
+        await self.clip_store.sync_with_disk(settle_paths)
         await self.playlist_store.sync_active_playlist_from_clips()
         await self._publish_media_state()
 

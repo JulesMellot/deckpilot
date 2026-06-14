@@ -348,6 +348,12 @@ class MPVController:
             '--osc=no',
             '--load-scripts=no',
             '--osd-level=0',
+            # Never show the pointer on the program output. mpv is fullscreen, so
+            # under cage/Wayland it asks the compositor to hide the cursor over
+            # its surface; on direct DRM there is no cursor anyway. Without this,
+            # cage draws its default pointer over the video 24/7.
+            '--cursor-autohide=always',
+            '--no-input-cursor',
             f'--hwdec={self._hwdec_mode()}',
             # Bound the demuxer cache: mpv defaults to ~150 MiB forward cache,
             # which starves a 1 GB Pi. Local SD/USB reads do not need it.

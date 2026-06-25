@@ -307,10 +307,18 @@ class HyperDeckServer:
             session.notify_remote = boolish(params.get('remote'), session.notify_remote)
             return ok()
         if command == 'remote':
-            enabled = boolish(params.get('enable'), True)
-            session.remote_enabled = enabled
-            await self.controller.set_remote_enabled(enabled)
-            return ok()
+            # `remote` (bare, or with enable/override) always answers with the
+            # 210 remote info block — never 200 ok, or Companion errors out.
+            if 'enable' in params:
+                enabled = boolish(params.get('enable'), self.state.remote_enabled)
+                session.remote_enabled = enabled
+                await self.controller.set_remote_enabled(enabled)
+            return response(
+                210,
+                'remote info:',
+                f'enabled: {str(self.state.remote_enabled).lower()}',
+                'override: false',
+            )
         if command == 'remote info':
             return response(
                 210,

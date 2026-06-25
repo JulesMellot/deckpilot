@@ -180,6 +180,17 @@ class HyperDeckDispatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('enabled: true', reply)
         self.assertIn('override: false', reply)
 
+    async def test_bare_remote_returns_210_not_200(self) -> None:
+        # Companion sends `remote` as a query and expects 210 remote info.
+        reply = await self.dispatch('remote')
+        self.assertTrue(reply.startswith('210 remote info:'))
+        self.assertIn('enabled:', reply)
+
+    async def test_remote_enable_sets_and_returns_210(self) -> None:
+        reply = await self.dispatch('remote: enable: false')
+        self.assertTrue(reply.startswith('210 remote info:'))
+        self.assertIn('enabled: false', reply)
+
     async def test_watchdog_acks_and_stores_period(self) -> None:
         # Companion arms this on connect; a 100 syntax error here drops the link.
         reply = await self.dispatch('watchdog: period: 6')

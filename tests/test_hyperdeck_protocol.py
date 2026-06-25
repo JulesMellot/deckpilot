@@ -140,6 +140,12 @@ class HyperDeckDispatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('enabled: true', reply)
         self.assertIn('override: false', reply)
 
+    async def test_watchdog_acks_and_stores_period(self) -> None:
+        # Companion arms this on connect; a 100 syntax error here drops the link.
+        reply = await self.dispatch('watchdog: period: 6')
+        self.assertTrue(reply.startswith('200 ok'))
+        self.assertEqual(self.session.watchdog_period, 6)
+
     async def test_play_with_invalid_speed_returns_102(self) -> None:
         await self.controller.goto_clip(1)
 

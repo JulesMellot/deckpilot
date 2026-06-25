@@ -37,6 +37,9 @@ class HyperDeckSession:
     notify_clips: bool = False
     notify_remote: bool = False
     remote_enabled: bool = True
+    # Seconds of silence after which the deck drops the socket (0 = disabled).
+    # Companion arms this on connect, then pings to keep it fed.
+    watchdog_period: int = 0
 
 
 class HyperDeckServer:
@@ -80,7 +83,14 @@ class HyperDeckServer:
         await writer.drain()
         try:
             while not reader.at_eof():
-                raw = await reader.readline()
+                try:
+                    raw = await asyncio.wait_for(
+                        reader.readline(),
+                        timeout=session.watchdog_period or None,
+                    )
+                except asyncio.TimeoutError:
+                    await self.state.add_log('info', 'hyperdeck', f'{key} watchdog timeout')
+                    break
                 if not raw:
                     break
                 line = raw.decode('utf-8', errors='ignore').strip('\r\n')
@@ -287,6 +297,12 @@ class HyperDeckServer:
                 f'enabled: {str(self.state.remote_enabled).lower()}',
                 'override: false',
             )
+        if command == 'watchdog':
+            try:
+                session.watchdog_period = max(int(params.get('period', '0') or 0), 0)
+            except ValueError:
+                return failure(FAIL_INVALID_VALUE)
+            return ok()
         if command == 'ping':
             return ok()
         if command == 'help':
@@ -318,6 +334,7 @@ class HyperDeckServer:
                 'notify: transport: <true|false> slot: <true|false> remote: <true|false> clips: <true|false>',
                 'remote: enable: <true|false>',
                 'remote info',
+                'watchdog: period: <seconds>',
                 'ping',
                 'quit',
             )

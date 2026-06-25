@@ -96,6 +96,27 @@ class HyperDeckServer:
                 line = raw.decode('utf-8', errors='ignore').strip('\r\n')
                 if not line:
                     continue
+                # Multi-line command block: a header ending in ':' is followed
+                # by "key: value" lines until a blank line. Companion uses this
+                # form, so fold it back into the inline "cmd: k: v" shape.
+                if line.endswith(':'):
+                    parts = [line]
+                    while True:
+                        try:
+                            more = await asyncio.wait_for(
+                                reader.readline(),
+                                timeout=session.watchdog_period or None,
+                            )
+                        except asyncio.TimeoutError:
+                            more = b''
+                        if not more:
+                            break
+                        chunk = more.decode('utf-8', errors='ignore').strip('\r\n')
+                        if not chunk:
+                            break
+                        parts.append(chunk)
+                    if len(parts) > 1:
+                        line = parts[0] + ' ' + ' '.join(parts[1:])
                 await self.state.add_log('info', 'hyperdeck', f'{key} -> {line}')
                 reply = await self._dispatch(session, line)
                 if reply is not None:

@@ -31,6 +31,46 @@ class FakeWriter:
     def close(self) -> None:
         self.closed = True
 
+    def get_extra_info(self, _name: str):
+        return ('127.0.0.1', 1)
+
+    async def wait_closed(self) -> None:
+        return None
+
+
+class FakeReader:
+    """Feeds canned lines, then EOF, like asyncio.StreamReader."""
+
+    def __init__(self, lines: list[bytes]) -> None:
+        self._lines = list(lines)
+
+    def at_eof(self) -> bool:
+        return not self._lines
+
+    async def readline(self) -> bytes:
+        return self._lines.pop(0) if self._lines else b''
+
+
+class HyperDeckMultilineTests(unittest.IsolatedAsyncioTestCase):
+    async def test_multiline_block_is_folded_into_one_command(self) -> None:
+        config = AppConfig()
+        state = AppState(config)
+        controller = DeckController(
+            config=config, state=state, clip_store=FakeClipStore([]),
+            playlist_store=FakePlaylistStore(), output_manager=FakeOutputManager(),
+            network_info=FakeNetworkInfo(), player=FakePlayer(),
+        )
+        server = HyperDeckServer(config, state, controller)
+        # Companion's multi-line form: header, params, blank-line terminator.
+        reader = FakeReader([
+            b'watchdog:\r\n', b'period: 6\r\n', b'\r\n',
+            b'notify:\r\n', b'remote: true\r\n', b'transport: true\r\n', b'\r\n',
+        ])
+        writer = FakeWriter()
+        await server._handle_client(reader, writer)
+        # No 100 syntax error went out, and the blocks took effect.
+        self.assertNotIn(b'100 syntax error', writer.data)
+
 
 class HyperDeckDispatchTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:

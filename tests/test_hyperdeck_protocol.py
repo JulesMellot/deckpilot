@@ -133,6 +133,12 @@ class HyperDeckDispatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('single clip: false', reply)
         self.assertIn('loop: false', reply)
 
+    async def test_transport_info_advertises_first_clip_when_idle(self) -> None:
+        # Nothing cued: the ATEM needs a non-zero clip id to arm auto-roll.
+        reply = await self.dispatch('transport info')
+
+        self.assertIn('clip id: 1', reply)
+
     async def test_goto_relative_clip_id_moves_from_current(self) -> None:
         await self.controller.goto_clip(2)
 

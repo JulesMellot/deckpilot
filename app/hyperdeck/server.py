@@ -129,6 +129,11 @@ class HyperDeckServer:
             await self.state.remove_controller(key)
             await self.state.add_log('info', 'hyperdeck', f'Client disconnected: {key}')
 
+    async def _effective_clip_id(self) -> int:
+        """First clip id, or 0 when the timeline is empty."""
+        clips = await self.controller.list_clips()
+        return clips[0].deck_id if clips else 0
+
     def _greeting(self) -> bytes:
         return response(
             500,
@@ -174,13 +179,17 @@ class HyperDeckServer:
             return response(205, 'clips info:', *lines)
         if command == 'transport info':
             t = self.state.transport
+            # A real HyperDeck with a loaded timeline always reports a current
+            # clip (>= 1). When nothing is cued yet, advertise the first clip so
+            # the ATEM treats the deck as ready and will auto-roll it.
+            clip_id = t.clip_id or await self._effective_clip_id()
             return response(
                 208,
                 'transport info:',
                 f'status: {t.status}',
                 f'speed: {t.speed}',
                 f'slot id: {t.slot_id}',
-                f'clip id: {t.clip_id}',
+                f'clip id: {clip_id}',
                 f'single clip: {str(t.single_clip).lower()}',
                 f'display timecode: {t.display_timecode}',
                 f'timecode: {t.timecode}',
@@ -224,7 +233,7 @@ class HyperDeckServer:
                     return ok()
                 if speed < 0:
                     return failure(FAIL_INVALID_VALUE)
-            target_clip_id = self.state.playrange_clip_id or self.state.transport.clip_id or None
+            target_clip_id = self.state.playrange_clip_id or self.state.transport.clip_id or await self._effective_clip_id() or None
             success = await self.controller.play(clip_id=target_clip_id, loop=loop, single_clip=single_clip, speed=speed)
             return ok() if success else failure(FAIL_INVALID_STATE)
         if command == 'stop':

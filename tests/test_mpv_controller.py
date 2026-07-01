@@ -75,6 +75,31 @@ class MPVControllerCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response['request_id'], 1)
         self.assertIsNone(self.controller.last_error)
 
+    async def test_command_times_out_instead_of_wedging_on_a_stuck_mpv(self) -> None:
+        # A wedged mpv keeps the socket open but never answers. The command must
+        # give up (and release the lock) rather than block the deck forever.
+        class HangingReader:
+            async def readline(self) -> bytes:
+                await asyncio.Event().wait()  # never resolves
+                return b''
+
+        import app.player.mpv_controller as mod
+
+        self.controller._reader = HangingReader()
+        original = mod._IPC_READ_TIMEOUT
+        mod._IPC_READ_TIMEOUT = 0.05
+        try:
+            response = await asyncio.wait_for(
+                self.controller.command(['get_property', 'pause']), timeout=2.0
+            )
+        finally:
+            mod._IPC_READ_TIMEOUT = original
+
+        self.assertIsNone(response)
+        self.assertIn('timed out', (self.controller.last_error or ''))
+        # Lock was released: a follow-up command can still run.
+        self.assertFalse(self.controller._command_lock.locked())
+
     async def test_seek_absolute_sends_time_pos_property_update(self) -> None:
         self.controller._reader = FakeReader(['{"request_id":1,"error":"success"}'])
 

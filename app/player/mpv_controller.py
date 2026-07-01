@@ -11,6 +11,12 @@ from typing import Any
 
 from app.core.config import AppConfig
 
+# A wedged mpv (GPU/decoder hang, common on a Pi) can keep its IPC socket open
+# yet never answer. Without a ceiling, the readline below would block forever
+# while holding the command lock and freeze every transport control. Bound the
+# wait so a stuck command fails cleanly and the deck can recover mpv.
+_IPC_READ_TIMEOUT = 10.0
+
 _AUDIO_CARD_RE = re.compile(r'CARD=([^,]+)')
 # The analog jack on a Pi is quiet because its ALSA mixer ships below unity.
 # mpv's `volume` is software-only, so we lift the card's playback controls to
@@ -278,7 +284,11 @@ class MPVController:
     async def _read_response(self, request_id: int) -> dict[str, Any] | None:
         assert self._reader is not None
         for _ in range(64):
-            response = await self._reader.readline()
+            try:
+                response = await asyncio.wait_for(self._reader.readline(), _IPC_READ_TIMEOUT)
+            except asyncio.TimeoutError:
+                self.last_error = f'mpv IPC timed out waiting for response {request_id}'
+                return None
             if not response:
                 self.last_error = 'mpv IPC returned an empty response'
                 return None

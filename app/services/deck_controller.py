@@ -7,6 +7,7 @@ import shutil
 import time
 from typing import Any, Dict
 
+from app import __version__
 from app.core.config import AppConfig
 from app.core.state import AppState
 from app.media.clip_store import ClipStore, seconds_to_timecode
@@ -860,6 +861,7 @@ class DeckController:
             'health': await self.health_snapshot(),
             'safety': self.state.safety_snapshot(),
             'app_name': self.config.app_name,
+            'version': __version__,
             'allowed_extensions': list(self.config.allowed_upload_extensions),
         }
 

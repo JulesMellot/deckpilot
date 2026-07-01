@@ -11,25 +11,6 @@ into a new dated section, then `git tag v0.x.y`.
 
 ## [Unreleased]
 
-### Fixed
-- HyperDeck server: no longer drops the connection on a malformed/oversized `clip id` or
-  `slot id` (answers `102` instead of crashing), and resyncs cleanly after a line longer than
-  the 64KB read buffer instead of tearing down the socket.
-- HyperDeck server: `508` transport notifications now advertise the first clip id instead of
-  `0`, matching the synchronous `transport info` behavior the ATEM relies on for auto-roll.
-- mpv IPC reads now time out (10s) instead of blocking forever when mpv wedges (GPU/decoder
-  hang), so a stuck command fails cleanly instead of freezing every transport control.
-- Web UI: WebSocket reconnect now backs off exponentially (1s -> 15s cap) instead of hammering
-  the server every 2s while it's down.
-- Web UI: a `refresh()` call superseded by a newer one can no longer clobber the UI with stale
-  state (request-id guard on concurrent `/api/state` fetches).
-- Web UI: drag state (opacity/transform on media items, pad drop-target highlight) now always
-  resets, even when a drag is released outside any valid drop target.
-
-### Changed
-- Web UI: added `aria-label`s to the seek slider, volume fader, and refresh button, plus a
-  `:focus-visible` outline for keyboard-driven operation.
-
 ## [0.1.0] - 2026-07-01
 
 Initial alpha. DeckPilot emulates a Blackmagic HyperDeck over the Ethernet protocol and drives
@@ -55,6 +36,10 @@ mpv-based playout from a browser-based operator panel, targeting a Raspberry Pi 
   services, and a web-triggered automatic update flow (git pull, dependency install, restart or
   Pi reboot as needed) with safe-mode support.
 - Standby slate on idle output, safe mode, and an arm-controls guard against accidental fires.
+- Keyboard-friendly operation: `aria-label`s on the seek slider, volume fader, and refresh
+  button, plus a `:focus-visible` outline.
+- CI (GitHub Actions): full test suite on Python 3.9 and 3.12, JS syntax check, on every push
+  and pull request.
 
 ### Fixed
 - Numerous HyperDeck protocol conformance fixes for real-world controllers: `remote` returning
@@ -65,3 +50,14 @@ mpv-based playout from a browser-based operator panel, targeting a Raspberry Pi 
 - Modal dialogs kept inside the viewport; various web UI layout and English-copy fixes.
 - Update/reboot recovery edge cases (systemd cgroup kill during restart, missing `_seatd`
   group, safe-mode interaction with web updates).
+- HyperDeck server: no longer drops the connection on a malformed/oversized `clip id` or
+  `slot id` (answers `102` instead of crashing), and resyncs cleanly after a line longer than
+  the 64KB read buffer instead of tearing down the socket.
+- HyperDeck server: `508` transport notifications now advertise the first clip id instead of
+  `0`, matching the synchronous `transport info` behavior the ATEM relies on for auto-roll.
+- mpv IPC reads now time out (10s) instead of blocking forever when mpv wedges (GPU/decoder
+  hang), so a stuck command fails cleanly instead of freezing every transport control.
+- Web UI: WebSocket reconnect backs off exponentially (1s -> 15s cap), a stale `/api/state`
+  response can no longer clobber newer state (request-id guard), and drag visuals always
+  reset even when a drag ends outside a valid drop target.
+- Python 3.9 compatibility: asyncio primitives are created lazily inside the running loop.

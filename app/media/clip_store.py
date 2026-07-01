@@ -65,12 +65,15 @@ class ClipStore:
         self.db_path = Path(config.db_path)
         self.clips_dir = Path(config.clips_dir)
         self.thumbnails_dir = Path(config.thumbnails_dir)
-        self._enrichment_queue: asyncio.Queue[str] = asyncio.Queue()
+        # Queue/event are created lazily inside the running loop: on Python 3.9
+        # asyncio primitives bind the event loop at construction time, and
+        # ClipStore is instantiated before the loop exists.
+        self._enrichment_queue: asyncio.Queue[str] | None = None
         self._queued_enrichment: set[str] = set()
         self._enrichment_workers: list[asyncio.Task] = []
         self._enrichment_worker_count = max(1, int(config.media_enrichment_workers or 1))
         self._enrichment_notify_task: asyncio.Task | None = None
-        self._enrichment_notify_event = asyncio.Event()
+        self._enrichment_notify_event: asyncio.Event | None = None
         self._remote_enrichment_tasks: set[asyncio.Task] = set()
         self._enrichment_callback: Callable[[], Awaitable[None]] | None = None
         self._processing_metrics_lock = Lock()
@@ -82,6 +85,16 @@ class ClipStore:
         self._clips_cache: list[ClipRecord] | None = None
         self._clips_index: dict[int, ClipRecord] = {}
         self._clips_cache_generation = 0
+
+    def _get_enrichment_queue(self) -> asyncio.Queue[str]:
+        if self._enrichment_queue is None:
+            self._enrichment_queue = asyncio.Queue()
+        return self._enrichment_queue
+
+    def _get_notify_event(self) -> asyncio.Event:
+        if self._enrichment_notify_event is None:
+            self._enrichment_notify_event = asyncio.Event()
+        return self._enrichment_notify_event
 
     def _invalidate_clips_cache(self) -> None:
         self._clips_cache_generation += 1
@@ -114,9 +127,10 @@ class ClipStore:
         self._enrichment_workers = []
         self._enrichment_notify_task = None
         self._enrichment_callback = None
-        self._enrichment_notify_event.clear()
+        if self._enrichment_notify_event is not None:
+            self._enrichment_notify_event.clear()
         self._queued_enrichment.clear()
-        self._enrichment_queue = asyncio.Queue()
+        self._enrichment_queue = None
         with self._processing_metrics_lock:
             self._processing_batch_started_at = None
             self._processing_batch_total = 0
@@ -639,39 +653,41 @@ class ClipStore:
             if path in self._queued_enrichment:
                 continue
             self._queued_enrichment.add(path)
-            await self._enrichment_queue.put(path)
+            await self._get_enrichment_queue().put(path)
             queued_count += 1
         if queued_count:
             self._record_batch_enqueue(queued_count)
 
     async def _enrichment_worker(self, _worker_index: int) -> None:
+        queue = self._get_enrichment_queue()
         while True:
-            path = await self._enrichment_queue.get()
+            path = await queue.get()
             try:
                 filename = Path(path).name
                 await asyncio.to_thread(self._set_processing_state_sync, filename, 'processing')
                 changed = await asyncio.to_thread(self._enrich_clip_sync, Path(path))
                 if changed:
-                    self._enrichment_notify_event.set()
+                    self._get_notify_event().set()
                 else:
                     await asyncio.to_thread(self._set_processing_state_sync, filename, 'error', 'Clip was removed before import finished')
-                    self._enrichment_notify_event.set()
+                    self._get_notify_event().set()
                 self._record_batch_completion()
             except Exception as exc:
                 reason = (str(exc).strip() or exc.__class__.__name__)[:200]
                 await asyncio.to_thread(self._set_processing_state_sync, Path(path).name, 'error', reason)
-                self._enrichment_notify_event.set()
+                self._get_notify_event().set()
                 self._record_batch_completion()
             finally:
                 self._queued_enrichment.discard(path)
-                self._enrichment_queue.task_done()
+                queue.task_done()
 
     async def _enrichment_notifier(self) -> None:
+        event = self._get_notify_event()
         while True:
-            await self._enrichment_notify_event.wait()
-            self._enrichment_notify_event.clear()
+            await event.wait()
+            event.clear()
             await asyncio.sleep(0.25)
-            if self._enrichment_notify_event.is_set():
+            if event.is_set():
                 continue
             if self._enrichment_callback:
                 await self._enrichment_callback()
@@ -845,7 +861,7 @@ class ClipStore:
             'processing': processing,
             'error': error,
             'ready': ready,
-            'queued': self._enrichment_queue.qsize(),
+            'queued': self._enrichment_queue.qsize() if self._enrichment_queue else 0,
             'clips_per_second': clips_per_second,
             'eta_seconds': eta_seconds,
         }
@@ -1017,7 +1033,7 @@ class ClipStore:
     async def _enrich_remote_clip(self, filename: str, url: str) -> None:
         try:
             await asyncio.to_thread(self._set_processing_state_sync, filename, 'processing')
-            self._enrichment_notify_event.set()
+            self._get_notify_event().set()
             meta = await asyncio.to_thread(self._ffprobe_meta, url, 'video', 20.0)
             thumb = await asyncio.to_thread(self._generate_remote_thumbnail, url, filename)
             await asyncio.to_thread(self._apply_remote_meta_sync, filename, meta, thumb)
@@ -1025,7 +1041,7 @@ class ClipStore:
             # Never let a bad link wedge the clip in 'processing'.
             await asyncio.to_thread(self._set_processing_state_sync, filename, 'ready')
         finally:
-            self._enrichment_notify_event.set()
+            self._get_notify_event().set()
 
     def _apply_remote_meta_sync(self, filename: str, meta: dict, thumb: str | None) -> None:
         with self._connect() as conn:

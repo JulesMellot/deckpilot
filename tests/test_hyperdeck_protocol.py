@@ -120,6 +120,12 @@ class HyperDeckDispatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('clip count: 3', reply)
         self.assertIn('1: Intro 00:00:00:00 00:00:12:00', reply)
 
+    async def test_clips_count_returns_214_with_clip_count(self) -> None:
+        reply = await self.dispatch('clips count')
+
+        self.assertTrue(reply.startswith('214 clips count:'))
+        self.assertIn('clip count: 3', reply)
+
     async def test_transport_info_includes_single_clip_and_loop(self) -> None:
         reply = await self.dispatch('transport info')
 

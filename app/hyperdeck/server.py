@@ -162,6 +162,9 @@ class HyperDeckServer:
         if command == 'clips clear':
             success = await self.controller.protocol_clips_clear()
             return ok() if success else failure(FAIL_TIMELINE_EMPTY)
+        if command == 'clips count':
+            clips = await self.controller.list_clips()
+            return response(214, 'clips count:', f'clip count: {len(clips)}')
         if command == 'clips get':
             clips = await self.controller.list_clips()
             lines = [f'clip count: {len(clips)}']

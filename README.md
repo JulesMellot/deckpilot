@@ -292,7 +292,7 @@ Rough order, not hard dates. The cheap-Pi baseline always comes first; the heavi
 
 **Now → hardening the core**
 
-- Real-world ATEM validation — ongoing. Around a dozen sessions so far with no issues, but not yet tested against the full range of Blackmagic switchers and firmware, so more hardware coverage is the priority.
+- Real-world ATEM validation — ongoing. Confirmed against ATEM hardware: **Auto Roll fires clips on cut** and the deck **shows up and drives correctly from ATEM Software Control**. Around a dozen sessions so far with no issues, but not yet tested against the full range of Blackmagic switchers and firmware, so more hardware coverage is the priority.
 - Broader HyperDeck protocol coverage and a wider automated test suite.
 - Import diagnostics (tell the operator *why* a file was rejected or stalled).
 - First-run setup guide and clearer in-app errors.

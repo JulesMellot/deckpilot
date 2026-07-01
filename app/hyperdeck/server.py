@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
+from app import __version__
 from app.core.config import AppConfig
 from app.core.state import AppState
 from app.hyperdeck.protocol import (
@@ -21,7 +22,9 @@ from app.hyperdeck.protocol import (
 )
 from app.services.deck_controller import DeckController
 
-SOFTWARE_VERSION = '1.0'
+# Reported to controllers (ATEM, Companion) via `device info`. Tied to
+# DeckPilot's own release, not the HyperDeck Ethernet Protocol version above.
+SOFTWARE_VERSION = __version__
 
 
 @dataclass
@@ -91,6 +94,11 @@ class HyperDeckServer:
                 except asyncio.TimeoutError:
                     await self.state.add_log('info', 'hyperdeck', f'{key} watchdog timeout')
                     break
+                except ValueError:
+                    # A line longer than asyncio's 64KB buffer. readline() has
+                    # already flushed the buffer, so drop the garbage and resync
+                    # on the next newline rather than dropping the connection.
+                    continue
                 if not raw:
                     break
                 line = raw.decode('utf-8', errors='ignore').strip('\r\n')
@@ -107,7 +115,7 @@ class HyperDeckServer:
                                 reader.readline(),
                                 timeout=session.watchdog_period or None,
                             )
-                        except asyncio.TimeoutError:
+                        except (asyncio.TimeoutError, ValueError):
                             more = b''
                         if not more:
                             break
@@ -158,8 +166,12 @@ class HyperDeckServer:
                 f'software version: {SOFTWARE_VERSION}',
             )
         if command == 'clips add':
-            clip_id = int(params.get('clip id', '0') or 0)
+            raw_clip_id = (params.get('clip id') or '').strip()
             name = params.get('name')
+            try:
+                clip_id = int(raw_clip_id) if raw_clip_id else 0
+            except ValueError:
+                return failure(FAIL_INVALID_VALUE)
             if not clip_id and not name:
                 return failure(FAIL_SYNTAX_ERROR)
             success = await self.controller.protocol_clips_add(clip_id=clip_id or None, name=name)
@@ -208,7 +220,11 @@ class HyperDeckServer:
                 f"video format: {slot['video_format']}",
             )
         if command == 'slot select':
-            slot_id = int(params.get('slot id', '1') or 1)
+            raw_slot_id = (params.get('slot id') or '').strip()
+            try:
+                slot_id = int(raw_slot_id) if raw_slot_id else 1
+            except ValueError:
+                return failure(FAIL_INVALID_VALUE)
             return ok() if slot_id == 1 else failure(FAIL_INVALID_VALUE)
         if command == 'configuration':
             return response(
@@ -287,7 +303,11 @@ class HyperDeckServer:
             success = await self.controller.goto_clip(clip_id)
             return ok() if success else failure(FAIL_INVALID_STATE)
         if command == 'playrange set':
-            clip_id = int(params.get('clip id', '0') or 0)
+            raw_clip_id = (params.get('clip id') or '').strip()
+            try:
+                clip_id = int(raw_clip_id) if raw_clip_id else 0
+            except ValueError:
+                return failure(FAIL_INVALID_VALUE)
             self.state.playrange_clip_id = clip_id
             if clip_id > 0:
                 await self.controller.goto_clip(clip_id)
@@ -393,13 +413,16 @@ class HyperDeckServer:
             event_type = event['type']
             payload = event['payload']
             if event_type == 'transport':
+                # Mirror the synchronous `transport info`: never advertise clip 0
+                # to a subscriber, or the ATEM drops its auto-roll readiness.
+                clip_id = payload['clip_id'] or await self._effective_clip_id()
                 packet = response(
                     508,
                     'transport info:',
                     f"status: {payload['status']}",
                     f"speed: {payload['speed']}",
                     f"slot id: {payload['slot_id']}",
-                    f"clip id: {payload['clip_id']}",
+                    f"clip id: {clip_id}",
                     f"single clip: {str(payload['single_clip']).lower()}",
                     f"display timecode: {payload['display_timecode']}",
                     f"timecode: {payload['timecode']}",

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import unittest
 
 from app.core.config import AppConfig
@@ -49,6 +51,36 @@ class FakeReader:
 
     async def readline(self) -> bytes:
         return self._lines.pop(0) if self._lines else b''
+
+
+class FlakyReader:
+    """Feeds a scripted mix of lines and readline() errors, then EOF."""
+
+    def __init__(self, script: list) -> None:
+        # Each item is either bytes (a line) or an exception class to raise.
+        self._script = list(script)
+
+    def at_eof(self) -> bool:
+        return not self._script
+
+    async def readline(self) -> bytes:
+        if not self._script:
+            return b''
+        item = self._script.pop(0)
+        if isinstance(item, type) and issubclass(item, Exception):
+            raise item('line too long')
+        return item
+
+
+def _make_server(clips: list | None = None):
+    config = AppConfig()
+    state = AppState(config)
+    controller = DeckController(
+        config=config, state=state, clip_store=FakeClipStore(clips or []),
+        playlist_store=FakePlaylistStore(), output_manager=FakeOutputManager(),
+        network_info=FakeNetworkInfo(), player=FakePlayer(),
+    )
+    return HyperDeckServer(config, state, controller), state, controller
 
 
 class HyperDeckMultilineTests(unittest.IsolatedAsyncioTestCase):
@@ -214,6 +246,50 @@ class HyperDeckDispatchTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue((await self.dispatch('play: speed: fast')).startswith('102 invalid value'))
         self.assertTrue((await self.dispatch('play: speed: -100')).startswith('102 invalid value'))
+
+    async def test_clips_add_non_numeric_id_returns_102(self) -> None:
+        # A garbage clip id must not raise and drop the connection.
+        self.assertTrue((await self.dispatch('clips add: clip id: abc')).startswith('102 invalid value'))
+
+    async def test_slot_select_non_numeric_id_returns_102(self) -> None:
+        self.assertTrue((await self.dispatch('slot select: slot id: xyz')).startswith('102 invalid value'))
+
+    async def test_playrange_set_non_numeric_id_returns_102(self) -> None:
+        self.assertTrue((await self.dispatch('playrange set: clip id: nope')).startswith('102 invalid value'))
+
+
+class HyperDeckRobustnessTests(unittest.IsolatedAsyncioTestCase):
+    async def test_oversized_line_resyncs_without_dropping_connection(self) -> None:
+        # asyncio's readline() raises ValueError on a >64KB line; the server must
+        # swallow it, resync, and still answer the next command.
+        server, _state, _controller = _make_server()
+        reader = FlakyReader([ValueError, b'ping\r\n'])
+        writer = FakeWriter()
+
+        await server._handle_client(reader, writer)
+
+        self.assertIn(b'200 ok', writer.data)
+        self.assertTrue(writer.closed)
+
+    async def test_transport_notify_never_advertises_clip_zero(self) -> None:
+        clips = [FakeClip(deck_id=1, name='Intro', filepath='/tmp/intro.mp4')]
+        server, state, _controller = _make_server(clips)
+        server._queue = await state.subscribe()
+        session = HyperDeckSession(key='n', writer=FakeWriter(), host='127.0.0.1', port=1)
+        session.notify_transport = True
+        server.sessions[session.key] = session
+        task = asyncio.create_task(server._broadcast_events())
+        try:
+            # Idle transport change (clip id still 0): the async 508 must fall
+            # back to the first clip, matching the synchronous transport info.
+            await state.set_transport(status='stopped', speed=1)
+            await asyncio.sleep(0.05)
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        self.assertIn(b'clip id: 1', session.writer.data)
+        self.assertNotIn(b'clip id: 0', session.writer.data)
 
 
 class ProtocolHelperTests(unittest.TestCase):

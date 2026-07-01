@@ -83,6 +83,21 @@ class ClipStoreThumbnailTests(unittest.TestCase):
         self.assertEqual(clips[0].media_kind, 'video')
         self.assertEqual(clips[0].processing_state, 'pending')
 
+    def test_processing_error_stores_reason_and_clears_it_on_retry(self) -> None:
+        clip = Path(self.config.clips_dir) / 'broken.mp4'
+        clip.write_bytes(b'not-really-video')
+        self.store._sync_with_disk_sync()
+
+        self.store._set_processing_state_sync('broken.mp4', 'error', 'Unreadable file — no video stream found')
+        errored = self.store._list_clips_sync()[0]
+        self.assertEqual(errored.processing_state, 'error')
+        self.assertEqual(errored.error_reason, 'Unreadable file — no video stream found')
+
+        # Re-processing (any non-error state) must drop the stale reason.
+        self.store._set_processing_state_sync('broken.mp4', 'processing')
+        retried = self.store._list_clips_sync()[0]
+        self.assertEqual(retried.error_reason, '')
+
     def test_sync_ingests_usb_clips_and_marks_them_offline_when_unplugged(self) -> None:
         usb_dir = Path(self.temp_dir.name) / 'usb'
         usb_dir.mkdir()

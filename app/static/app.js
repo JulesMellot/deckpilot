@@ -583,6 +583,10 @@ function updateMediaNode(node, clip, activeClipId, status) {
   statusOverlay.classList.toggle('error', clip.processing_state === 'error');
   statusOverlay.classList.toggle('offline', !playbackActive && isOffline);
   statusOverlay.style.display = overlayLabel ? 'flex' : 'none';
+  // On failure, hovering the clip (or its red badge) reveals why it errored.
+  const errorReason = clip.processing_state === 'error' ? (clip.error_reason || 'Import failed') : '';
+  node.title = errorReason;
+  statusOverlay.title = errorReason;
 }
 
 function getOrCreatePlaylistNode(playlistId, item) {

@@ -22,6 +22,9 @@ class ClipRecord:
     is_vertical: bool = False
     thumbnail_path: str | None = None
     processing_state: str = "ready"
+    # Human-readable reason a clip is in the 'error' state (ffprobe/conform
+    # failure, unreadable file, ...). Empty for every other state.
+    error_reason: str = ""
     loop_enabled: bool = False
     is_builtin: bool = False
     mark_in_seconds: float = 0.0

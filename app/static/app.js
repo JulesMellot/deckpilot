@@ -19,6 +19,7 @@ const state = {
   updatePollTimer: null,
   updatePollInFlight: false,
   websocketReconnectTimer: null,
+  websocketReconnectAttempts: 0,
   volumeCommitTimer: null,
   volumeCommitInFlight: false,
   pendingVolume: null,
@@ -547,6 +548,11 @@ function updateMediaNode(node, clip, activeClipId, status) {
     processingLabel || null,
   ].filter(Boolean);
 
+  // Nodes are reused across renders (getOrCreateMediaNode); a drag interrupted
+  // without a matching dragend/dragleave (e.g. drag released outside the window)
+  // would otherwise leave a stale inline opacity/transform on this node forever.
+  node.style.opacity = '';
+  node.style.transform = '';
   node.dataset.deckId = clip.deck_id;
   node.dataset.mediaKind = clip.media_kind || 'video';
   node.dataset.processingState = clip.processing_state || 'ready';
@@ -2470,6 +2476,10 @@ DOM.mediaGrid.addEventListener('dragend', (event) => {
   mediaItem.style.opacity = '1';
   mediaItem.style.transform = 'none';
   state.dragClipId = null;
+  // dragend always fires on the source, even if the drop landed outside any
+  // valid target — use it as a backstop to clear a pad's hover highlight that
+  // a missed dragleave would otherwise leave stuck "on" indefinitely.
+  DOM.padGrid.querySelectorAll('.pad-btn.drop-target').forEach((btn) => btn.classList.remove('drop-target'));
 });
 DOM.mediaGrid.addEventListener('dragover', (event) => {
   const mediaItem = event.target.closest('.media-item');
@@ -2741,12 +2751,19 @@ async function addSelectedClipToPlaylist() {
   await refresh();
 }
 
+// Concurrent refresh() calls (e.g. two quick operator actions) issue overlapping
+// GET requests; nothing guarantees they resolve in the order they were sent. Track
+// the latest request and drop any response that a newer refresh() has superseded,
+// so a slow/stale response can never clobber more recent state.
+let refreshRequestId = 0;
 async function refresh({ includeUpdate = true } = {}) {
+  const requestId = ++refreshRequestId;
   const requests = [api('/api/state')];
   if (includeUpdate) {
     requests.push(api('/api/system/update'));
   }
   const [snapshot, updatePayload] = await Promise.all(requests);
+  if (requestId !== refreshRequestId) return;
   renderState(snapshot);
   if (updatePayload) {
     renderUpdateStatus(updatePayload);
@@ -2758,10 +2775,15 @@ async function refresh({ includeUpdate = true } = {}) {
 
 function scheduleWebSocketReconnect() {
   if (state.websocketReconnectTimer) return;
+  // Exponential backoff (1s, 2s, 4s... capped at 15s) so a downed server
+  // during a multi-hour show doesn't get hammered with reconnect attempts.
+  const attempt = state.websocketReconnectAttempts;
+  const delay = Math.min(1000 * 2 ** attempt, 15000);
+  state.websocketReconnectAttempts = attempt + 1;
   state.websocketReconnectTimer = window.setTimeout(() => {
     state.websocketReconnectTimer = null;
     setupWebSocket();
-  }, 2000);
+  }, delay);
 }
 
 function setupWebSocket() {
@@ -2769,6 +2791,10 @@ function setupWebSocket() {
   const socket = new WebSocket(`${protocol}://${location.host}/ws`);
   socket.addEventListener('open', () => {
     state.websocketConnected = true;
+    state.websocketReconnectAttempts = 0;
+  });
+  socket.addEventListener('error', (event) => {
+    console.error('WebSocket error', event);
   });
   socket.addEventListener('message', (event) => {
     let message;

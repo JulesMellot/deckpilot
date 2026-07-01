@@ -26,6 +26,14 @@
 /* The hidden attribute must always win over component display rules. */
 [hidden] { display: none !important; }
 
+/* Keyboard-only focus indicator (touch/mouse clicks don't trigger :focus-visible),
+   so operators driving the deck with a keyboard during a show can see where
+   focus is without adding a ring to every touch tap. */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
 body {
   background-color: var(--bg-app);
   color: var(--text-main);

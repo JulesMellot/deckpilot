@@ -85,7 +85,7 @@
               <div class="scrub-mark scrub-mark-in" id="scrub-mark-in" hidden></div>
               <div class="scrub-mark scrub-mark-out" id="scrub-mark-out" hidden></div>
             </div>
-            <input type="range" id="transport-seek" class="transport-scrub-slider" min="0" max="0" step="0.04" value="0">
+            <input type="range" id="transport-seek" class="transport-scrub-slider" min="0" max="0" step="0.04" value="0" aria-label="Playback position">
           </div>
           <div class="transport-scrub-actions">
             <button id="btn-seek-back" class="action-btn" type="button">-10S</button>
@@ -134,7 +134,7 @@
           </div>
           <div class="transport-audio-row">
             <div class="transport-audio-label">MAIN</div>
-            <input type="range" id="config-volume" class="horizontal-fader" min="0" max="100" value="100">
+            <input type="range" id="config-volume" class="horizontal-fader" min="0" max="100" value="100" aria-label="Master volume">
             <div class="transport-audio-value" id="volume-value">100%</div>
             <button id="btn-mute" class="mute-btn">MUTE</button>
           </div>
@@ -197,7 +197,7 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
             ADD LINK
           </button>
-          <button id="btn-refresh-media" class="action-btn">
+          <button id="btn-refresh-media" class="action-btn" title="Refresh media library" aria-label="Refresh media library">
              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>
           </button>
         </div>

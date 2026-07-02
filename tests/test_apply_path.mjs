@@ -1,15 +1,7 @@
-// Fails if the ordered-apply guard in app/static/app.js stops dropping stale
-// fetch responses. Run: node tests/test_apply_path.mjs
-// ponytail: slices the guard out of app.js by marker; import it properly once
-// the UI moves to ES modules (roadmap step 2).
-import { readFileSync } from 'node:fs';
+// Fails if the ordered-apply guard in app/static/store.js stops dropping
+// stale fetch responses. Run: node tests/test_apply_path.mjs
 import assert from 'node:assert/strict';
-
-const src = readFileSync(new URL('../app/static/app.js', import.meta.url), 'utf8');
-const block = src.slice(src.indexOf('let stateWriteSeq'), src.indexOf('async function refresh'));
-const { beginStateWrite, applyState, applyStateNow } = new Function(
-  `${block}; return { beginStateWrite, applyState, applyStateNow };`
-)();
+import { applyState, applyStateNow, beginStateWrite } from '../app/static/store.js';
 
 let value = null;
 

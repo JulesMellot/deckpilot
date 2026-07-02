@@ -12,7 +12,7 @@ import {
   mediaSourceUrl,
 } from './media.js';
 import { addSelectedClipToPlaylist } from './playlist.js';
-import { cueClip } from './app.js';
+import { cueClip } from './transport.js';
 
 export function openPreviewModal(clipId) {
   state.selectedClipId = clipId;

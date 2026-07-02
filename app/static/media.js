@@ -13,7 +13,8 @@ import {
   showNotice,
 } from './dialogs.js';
 import { openPreviewModal, renderPreview } from './preview.js';
-import { cueClip, refresh } from './app.js';
+import { cueClip } from './transport.js';
+import { refresh } from './app.js';
 
 export const MEDIA_VIRTUALIZATION_THRESHOLD = 120;
 

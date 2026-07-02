@@ -11,7 +11,8 @@ import {
   mediaKindLabel,
   mediaSourceUrl,
 } from './media.js';
-import { addSelectedClipToPlaylist, cueClip } from './app.js';
+import { addSelectedClipToPlaylist } from './playlist.js';
+import { cueClip } from './app.js';
 
 export function openPreviewModal(clipId) {
   state.selectedClipId = clipId;

@@ -1,0 +1,5 @@
+{
+  "private": true,
+  "type": "module",
+  "description": "Tooling only — makes node parse app/static/*.js as ES modules for syntax checks and tests. DeckPilot has no node runtime, no build step, no npm dependencies."
+}

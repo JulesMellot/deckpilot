@@ -28,6 +28,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - run: node --check app/static/app.js
+      - run: for f in app/static/*.js; do node --check "$f"; done
+
+      - run: node tests/test_ui_modules.mjs
 
       - run: node tests/test_apply_path.mjs

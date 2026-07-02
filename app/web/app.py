@@ -221,6 +221,11 @@ def build_app(
         # fingerprinted, so browsers can cache them forever.
         if path.startswith('/thumbs/') or (path.startswith('/static/') and 'v' in request.query_params):
             response.headers['Cache-Control'] = 'public, max-age=31536000, immutable'
+        elif path.startswith('/static/'):
+            # ES modules imported from app.js carry no ?v= stamp; force a
+            # revalidation (cheap 304 via ETag) so an update never leaves a
+            # browser running a stale module against new server code.
+            response.headers['Cache-Control'] = 'no-cache'
         return response
 
     def _asset_version(name: str) -> int:

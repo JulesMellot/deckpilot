@@ -12,7 +12,8 @@ import {
   requestText,
   showNotice,
 } from './dialogs.js';
-import { cueClip, openPreviewModal, refresh, renderPreview } from './app.js';
+import { openPreviewModal, renderPreview } from './preview.js';
+import { cueClip, refresh } from './app.js';
 
 export const MEDIA_VIRTUALIZATION_THRESHOLD = 120;
 

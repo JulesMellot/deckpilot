@@ -297,15 +297,9 @@ Rough order, not hard dates. The cheap-Pi baseline always comes first; the heavi
 - Import diagnostics (tell the operator *why* a file was rejected or stalled).
 - First-run setup guide and clearer in-app errors.
 
-**Splitting the web UI, without a build step**
+**Splitting the web UI, without a build step — ✅ done**
 
-The operator UI is one ~2,900-line vanilla JS file. That was deliberate — no framework, no build step, gzipped to a few KB so it loads fast on a tablet or an old laptop — but it is now the part of the codebase that will age worst: state, rendering, WebSocket handling, and every panel (media, transport, playlist, settings, health) share one scope. The early symptom is a `refresh()` race I already found — a slow fetch response able to clobber fresher WebSocket state. The constraint stays: **no framework, no build step, no new dependency.** Native ES modules (served as-is, still gzipped) plus one small state boundary get me there, staged so the deck keeps working at every step — it runs live shows, so no big-bang rewrite:
-
-1. **One ordered apply path — ✅ done.** Every write to the shared snapshot — full fetches *and* incremental WebSocket messages alike — goes through a single `applyState()` with a sequence guard, so a stale response can never overwrite newer state. The race class is dead, inside the single file, before anything moves (guard covered by `tests/test_apply_path.mjs`).
-2. **Entry becomes a module.** Flip the `<script>` to `type="module"`. The one inline `onclick` in the HTML only touches `document`, so nothing breaks — this just unlocks `import` / `export` (and the cache-bust stamp in `app.py` learns the new filenames).
-3. **Split along the seams, one file per commit.** Peel off `util` → `store` → the per-panel views in dependency order. Each move is a commit that leaves the deck fully working; run it, ship it, move the next one.
-
-Step 1 has landed. Steps 2–3 land before the next big UI feature — never as a refactor for its own sake.
+The operator UI used to be one ~2,900-line vanilla JS file; it is now eleven native ES modules served as-is (still no framework, no build step, no new dependency, still gzipped): `store.js` holds the shared state behind a single sequence-guarded `applyState()` write path — a slow fetch response can never overwrite fresher WebSocket state — with `util`, `dom`, `dialogs`, and one module per panel (`media`, `preview`, `playlist`, `transport`, `settings`, `health`) around it, and `app.js` staying the entry that orchestrates fetch/WebSocket application. It was split one file per commit with the deck working at every step. Sub-modules answer `Cache-Control: no-cache`, so browsers revalidate them after an update; the guard and the module graph are covered by `tests/test_apply_path.mjs` and `tests/test_ui_modules.mjs`, both run in CI.
 
 **Next → bigger hardware, bigger output**
 

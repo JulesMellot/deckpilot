@@ -1,57 +1,35 @@
-import {
-  api,
-  formatBytes,
-  formatClock,
-  formatDateTime,
-  formatEta,
-  formatRemainingClock,
-  formatUptimeMinutes,
-  getErrorMessage,
-} from './util.js';
-import { DOM, Templates } from './dom.js';
+// Entry point and orchestrator: fetch/WebSocket state application, the
+// cross-panel render paths, keyboard shortcuts, clock, and startup. Panels
+// import refresh() back from here — the one intentional cycle in the graph.
+
+import { api, getErrorMessage } from './util.js';
+import { DOM } from './dom.js';
 import {
   applyState,
   applyStateNow,
   beginStateWrite,
-  clipFromDeckId,
-  getSelectedClip,
-  liveActionBlocked,
   normalizeSelection,
-  padEntries,
-  playlistItemFromPosition,
   pruneNodeCache,
   reindexClips,
   state,
 } from './store.js';
 import {
-  bindAsync,
   closeAppDialog,
   ensureLiveActionAllowed,
-  openAppDialog,
-  requestConfirm,
-  requestSelect,
-  requestText,
   runShortcut,
   showNotice,
   submitAppDialog,
 } from './dialogs.js';
 import {
-  clipDurationLabel,
-  clipResolutionLabel,
   filteredClips,
-  mediaArtworkUrl,
-  mediaKindLabel,
-  mediaSourceUrl,
   renderFolders,
   renderMediaGrid,
   renderMediaToolbar,
-  renderUploadProcessingStatus,
   setMediaView,
   syncMediaGridVisualState,
 } from './media.js';
 import { closePreviewModal, renderPreview } from './preview.js';
 import {
-  playPlaylist,
   renderPlaylist,
   renderPlaylists,
   syncPlaylistVisualState,

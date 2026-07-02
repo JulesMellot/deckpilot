@@ -11,6 +11,15 @@ into a new dated section, then `git tag v0.x.y`.
 
 ## [Unreleased]
 
+### Changed
+- **Web UI**: the ~2,900-line `app.js` monolith is now eleven native ES modules (`store`, `util`,
+  `dom`, `dialogs`, and one per panel: `media`, `preview`, `playlist`, `transport`, `settings`,
+  `health`), split one file per commit with the deck working at every step — still no framework,
+  no build step, no runtime dependency. Sub-modules are served with `Cache-Control: no-cache` so
+  browsers revalidate them after an update; a node smoke test (`tests/test_ui_modules.mjs`) loads
+  the whole module graph in CI and fails on broken imports or startup errors. Removed the dead
+  `nudgeTransport` helper.
+
 ### Fixed
 - **Web UI**: all writes to the shared state snapshot (full fetches, WebSocket messages,
   optimistic volume/safety/display updates) now go through one ordered apply path with a

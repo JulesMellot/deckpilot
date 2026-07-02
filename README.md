@@ -296,6 +296,8 @@ Rough order, not hard dates. The cheap-Pi baseline always comes first; the heavi
 - Broader HyperDeck protocol coverage and a wider automated test suite.
 - Import diagnostics (tell the operator *why* a file was rejected or stalled).
 - First-run setup guide and clearer in-app errors.
+- Safe-eject a drive from the storage panel — flush and unmount so it can be pulled without leaving the filesystem dirty (the usual cause of a drive that won't remount).
+- Repair button for a drive that fails to mount — surface the corruption in the UI and offer a one-click `ntfsfix` / `fsck` instead of leaving the operator to the command line.
 
 **Splitting the web UI, without a build step — ✅ done**
 

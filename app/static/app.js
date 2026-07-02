@@ -1619,9 +1619,11 @@ function renderHealth(health, safety) {
 
 function applySafetyState(safety) {
   if (!safety) return;
-  if (!state.snapshot) state.snapshot = {};
-  state.snapshot.safety = safety;
-  renderHealth(state.snapshot.health, safety);
+  applyStateNow(() => {
+    if (!state.snapshot) state.snapshot = {};
+    state.snapshot.safety = safety;
+    renderHealth(state.snapshot.health, safety);
+  });
 }
 
 function liveActionBlocked() {
@@ -1671,7 +1673,9 @@ function scheduleVolumeCommit(volume) {
   state.pendingVolume = volume;
   DOM.volumeValue.textContent = `${volume}%`;
   if (state.snapshot?.audio) {
-    state.snapshot.audio.volume = volume;
+    applyStateNow(() => {
+      state.snapshot.audio.volume = volume;
+    });
   }
   if (state.volumeCommitTimer) {
     clearTimeout(state.volumeCommitTimer);
@@ -2329,8 +2333,10 @@ bindAsync(DOM.configCanvas, 'change', async (e) => {
   }
   const response = await api('/api/system/output-canvas', { method: 'POST', body: JSON.stringify({ mode: e.target.value }) });
   if (state.snapshot && response?.display) {
-    state.snapshot.display = response.display;
-    renderDisplaySettings(state.snapshot.display);
+    applyStateNow(() => {
+      state.snapshot.display = response.display;
+      renderDisplaySettings(state.snapshot.display);
+    });
   }
 }, 'Display Error');
 bindAsync(DOM.configAudio, 'change', async (e) => {
@@ -2751,20 +2757,37 @@ async function addSelectedClipToPlaylist() {
   await refresh();
 }
 
-// Concurrent refresh() calls (e.g. two quick operator actions) issue overlapping
-// GET requests; nothing guarantees they resolve in the order they were sent. Track
-// the latest request and drop any response that a newer refresh() has superseded,
-// so a slow/stale response can never clobber more recent state.
-let refreshRequestId = 0;
+// One ordered apply path for the shared snapshot. Every write — full fetches
+// and incremental WebSocket messages alike — takes a ticket when it starts,
+// and only lands if nothing newer landed first, so a slow fetch response can
+// never overwrite fresher WebSocket state or an optimistic local write.
+// Dropping a stale fetch is safe: the server broadcasts every change over the
+// socket, so whatever superseded the fetch has already been applied.
+let stateWriteSeq = 0;
+let appliedWriteSeq = 0;
+function beginStateWrite() {
+  return ++stateWriteSeq;
+}
+function applyState(ticket, write) {
+  if (ticket < appliedWriteSeq) return false;
+  appliedWriteSeq = ticket;
+  write();
+  return true;
+}
+// Synchronous writes (WebSocket messages, optimistic UI updates) land
+// immediately; taking a ticket invalidates any fetch already in flight.
+function applyStateNow(write) {
+  applyState(beginStateWrite(), write);
+}
+
 async function refresh({ includeUpdate = true } = {}) {
-  const requestId = ++refreshRequestId;
+  const ticket = beginStateWrite();
   const requests = [api('/api/state')];
   if (includeUpdate) {
     requests.push(api('/api/system/update'));
   }
   const [snapshot, updatePayload] = await Promise.all(requests);
-  if (requestId !== refreshRequestId) return;
-  renderState(snapshot);
+  applyState(ticket, () => renderState(snapshot));
   if (updatePayload) {
     renderUpdateStatus(updatePayload);
     if (['running', 'restarting', 'rebooting'].includes(updatePayload.phase)) {
@@ -2804,94 +2827,98 @@ function setupWebSocket() {
       console.error('Invalid websocket payload', error);
       return;
     }
-    if (message.type === 'snapshot') {
-      renderState(message.payload);
-      return;
-    }
-    if (!state.snapshot) return;
-    if (message.type === 'transport') {
-      const previousTransport = state.snapshot.transport;
-      state.snapshot.transport = message.payload;
-      normalizeSelection();
-      renderTransport(state.snapshot.transport, state.snapshot.clips);
-      if (transportAffectsCollections(previousTransport, state.snapshot.transport)) {
-        syncPlaybackCollections();
-      }
-      return;
-    }
-    if (message.type === 'clips') {
-      state.snapshot.clips = message.payload.clips;
-      reindexClips(state.snapshot.clips);
-      normalizeSelection();
-      renderTransport(state.snapshot.transport, state.snapshot.clips);
-      renderPlaybackCollections();
-      renderPreview();
-      return;
-    }
-    if (message.type === 'folders') {
-      state.folders = message.payload.folders || [];
-      renderCollections();
-      return;
-    }
-    if (message.type === 'playlists') {
-      state.playlists = message.payload.playlists || [];
-      renderPlaylists();
-      return;
-    }
-    if (message.type === 'connections') {
-      state.snapshot.connections = message.payload;
-      renderConnectionStatus(message.payload);
-      return;
-    }
-    if (message.type === 'audio') {
-      state.snapshot.audio = message.payload;
-      renderAudio(message.payload);
-      return;
-    }
-    if (message.type === 'playlist') {
-      state.snapshot.playlist = message.payload;
-      normalizeSelection();
-      renderPlaylists();
-      renderPlaybackCollections();
-      return;
-    }
-    if (message.type === 'pads') {
-      state.snapshot.pads = message.payload.pads || [];
-      renderPads();
-      return;
-    }
-    if (message.type === 'outputs') {
-      state.snapshot.outputs = message.payload.outputs;
-      renderOutputs(state.snapshot.outputs);
-      return;
-    }
-    if (message.type === 'health') {
-      state.snapshot.health = message.payload;
-      renderHealth(message.payload, state.snapshot.safety);
-      return;
-    }
-    if (message.type === 'display') {
-      state.snapshot.display = message.payload;
-      renderDisplaySettings(message.payload);
-      return;
-    }
-    if (message.type === 'safety') {
-      applySafetyState(message.payload);
-      return;
-    }
-    if (message.type === 'log') {
-      const logs = state.snapshot.logs || [];
-      logs.push(message.payload);
-      if (logs.length > 200) logs.splice(0, logs.length - 200);
-      state.snapshot.logs = logs;
-      scheduleLogsRender();
-      return;
-    }
+    applyStateNow(() => applyWebSocketMessage(message));
   });
   socket.addEventListener('close', () => {
     state.websocketConnected = false;
     scheduleWebSocketReconnect();
   });
+}
+
+function applyWebSocketMessage(message) {
+  if (message.type === 'snapshot') {
+    renderState(message.payload);
+    return;
+  }
+  if (!state.snapshot) return;
+  if (message.type === 'transport') {
+    const previousTransport = state.snapshot.transport;
+    state.snapshot.transport = message.payload;
+    normalizeSelection();
+    renderTransport(state.snapshot.transport, state.snapshot.clips);
+    if (transportAffectsCollections(previousTransport, state.snapshot.transport)) {
+      syncPlaybackCollections();
+    }
+    return;
+  }
+  if (message.type === 'clips') {
+    state.snapshot.clips = message.payload.clips;
+    reindexClips(state.snapshot.clips);
+    normalizeSelection();
+    renderTransport(state.snapshot.transport, state.snapshot.clips);
+    renderPlaybackCollections();
+    renderPreview();
+    return;
+  }
+  if (message.type === 'folders') {
+    state.folders = message.payload.folders || [];
+    renderCollections();
+    return;
+  }
+  if (message.type === 'playlists') {
+    state.playlists = message.payload.playlists || [];
+    renderPlaylists();
+    return;
+  }
+  if (message.type === 'connections') {
+    state.snapshot.connections = message.payload;
+    renderConnectionStatus(message.payload);
+    return;
+  }
+  if (message.type === 'audio') {
+    state.snapshot.audio = message.payload;
+    renderAudio(message.payload);
+    return;
+  }
+  if (message.type === 'playlist') {
+    state.snapshot.playlist = message.payload;
+    normalizeSelection();
+    renderPlaylists();
+    renderPlaybackCollections();
+    return;
+  }
+  if (message.type === 'pads') {
+    state.snapshot.pads = message.payload.pads || [];
+    renderPads();
+    return;
+  }
+  if (message.type === 'outputs') {
+    state.snapshot.outputs = message.payload.outputs;
+    renderOutputs(state.snapshot.outputs);
+    return;
+  }
+  if (message.type === 'health') {
+    state.snapshot.health = message.payload;
+    renderHealth(message.payload, state.snapshot.safety);
+    return;
+  }
+  if (message.type === 'display') {
+    state.snapshot.display = message.payload;
+    renderDisplaySettings(message.payload);
+    return;
+  }
+  if (message.type === 'safety') {
+    applySafetyState(message.payload);
+    return;
+  }
+  if (message.type === 'log') {
+    const logs = state.snapshot.logs || [];
+    logs.push(message.payload);
+    if (logs.length > 200) logs.splice(0, logs.length - 200);
+    state.snapshot.logs = logs;
+    scheduleLogsRender();
+    return;
+  }
 }
 
 async function initializeApp() {

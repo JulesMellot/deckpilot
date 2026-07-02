@@ -11,6 +11,12 @@ into a new dated section, then `git tag v0.x.y`.
 
 ## [Unreleased]
 
+### Fixed
+- **Web UI**: all writes to the shared state snapshot (full fetches, WebSocket messages,
+  optimistic volume/safety/display updates) now go through one ordered apply path with a
+  sequence guard, so a slow `/api/state` response can no longer overwrite fresher WebSocket
+  state (roadmap step 1 of the web UI split). Covered by `tests/test_apply_path.mjs`, run in CI.
+
 ## [0.1.0] - 2026-07-01
 
 Initial alpha. DeckPilot emulates a Blackmagic HyperDeck over the Ethernet protocol and drives

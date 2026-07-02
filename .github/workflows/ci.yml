@@ -29,3 +29,5 @@ jobs:
       - uses: actions/checkout@v4
 
       - run: node --check app/static/app.js
+
+      - run: node tests/test_apply_path.mjs

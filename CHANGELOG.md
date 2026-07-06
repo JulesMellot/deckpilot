@@ -11,6 +11,12 @@ into a new dated section, then `git tag v0.x.y`.
 
 ## [Unreleased]
 
+### Added
+- **Countdown overlay** (`/countdown`): a transparent page meant as an OBS browser source over
+  the stage return. It shows the running clip's remaining time during its last minute — blinking
+  orange, red from 30 s, fast-blinking red from 10 s — fed by the existing `/ws` transport events
+  and interpolated client-side between ticks.
+
 ### Changed
 - **Web UI**: the ~2,900-line `app.js` monolith is now eleven native ES modules (`store`, `util`,
   `dom`, `dialogs`, and one per panel: `media`, `preview`, `playlist`, `transport`, `settings`,

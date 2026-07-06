@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Compte à rebours</title>
+<style>
+  /* Fond transparent : la page est pensée comme source navigateur OBS
+     posée par-dessus le retour plateau. */
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  #timer {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-family: "Helvetica Neue", Arial, sans-serif;
+    font-weight: 700;
+    font-size: 28vh;
+    font-variant-numeric: tabular-nums;
+    color: #ff8c00;
+    text-shadow: 0 0 2vh rgba(0, 0, 0, 0.85);
+    visibility: hidden;
+  }
+  #timer.warn     { visibility: visible; color: #ff8c00; animation: blink 1s steps(1) infinite; }
+  #timer.alert    { visibility: visible; color: #ff2020; animation: blink 1s steps(1) infinite; }
+  #timer.critical { visibility: visible; color: #ff2020; animation: blink 0.2s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0.15; } }
+</style>
+</head>
+<body>
+<div id="timer"></div>
+<script>
+(() => {
+  const timer = document.getElementById('timer');
+  // Dernier état transport reçu + horodatage local pour interpoler entre
+  // deux ticks websocket (le serveur ne pousse qu'une fois par seconde).
+  let remaining = 0, receivedAt = 0, playing = false, rate = 1, loaded = false;
+
+  function applyTransport(t) {
+    remaining = Number(t.remaining_seconds) || 0;
+    receivedAt = performance.now();
+    playing = t.status === 'play' && !t.paused;
+    rate = (Number(t.playback_speed_percent) || 100) / 100;
+    loaded = t.status === 'play' || t.paused;
+  }
+
+  function render() {
+    let rem = remaining;
+    if (playing) rem -= (performance.now() - receivedAt) / 1000 * rate;
+    rem = Math.max(0, rem);
+    if (!loaded || rem > 60 || rem <= 0) {
+      timer.className = '';
+      return;
+    }
+    const whole = Math.ceil(rem);
+    timer.textContent = Math.floor(whole / 60) + ':' + String(whole % 60).padStart(2, '0');
+    timer.className = rem <= 10 ? 'critical' : rem <= 30 ? 'alert' : 'warn';
+  }
+
+  function connect() {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const ws = new WebSocket(proto + '://' + location.host + '/ws');
+    ws.onmessage = (event) => {
+      const msg = JSON.parse(event.data);
+      if (msg.type === 'transport') applyTransport(msg.payload);
+      else if (msg.type === 'snapshot' && msg.payload.transport) applyTransport(msg.payload.transport);
+    };
+    ws.onclose = () => { loaded = false; setTimeout(connect, 2000); };
+  }
+
+  connect();
+  setInterval(render, 100);
+})();
+</script>
+</body>
+</html>

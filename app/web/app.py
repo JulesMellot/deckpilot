@@ -243,6 +243,11 @@ def build_app(
             html = html.replace(f'/static/{asset}', f'/static/{asset}?v={_asset_version(asset)}')
         return HTMLResponse(html, headers={'Cache-Control': 'no-cache'})
 
+    @app.get('/countdown')
+    async def countdown() -> FileResponse:
+        # Overlay OBS (source navigateur) : compte à rebours du clip en cours.
+        return FileResponse(static_dir / 'countdown.html', headers={'Cache-Control': 'no-cache'})
+
     @app.get('/media/{filename}')
     async def get_media(filename: str) -> FileResponse:
         # Resolve by known clip rather than serving a directory: a clip may live

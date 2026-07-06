@@ -13,9 +13,11 @@ into a new dated section, then `git tag v0.x.y`.
 
 ### Added
 - **Countdown overlay** (`/countdown`): a transparent page meant as an OBS browser source over
-  the stage return. It shows the running clip's remaining time during its last minute — blinking
-  orange, red from 30 s, fast-blinking red from 10 s — fed by the existing `/ws` transport events
-  and interpolated client-side between ticks.
+  the stage return. It shows the running clip's remaining time the whole way through — steady
+  white above one minute (`h:mm:ss` for long clips), then blinking orange, red from 30 s,
+  fast-blinking red from 10 s — fed by the existing `/ws` transport events and interpolated
+  client-side between ticks. A looping clip never "ends", so instead of a countdown that would
+  blink at every wrap, the overlay shows a discreet steady `∞`.
 - **Connections modal**: the ATEM target chip in the header now opens a dialog listing every
   address to point gear at — HyperDeck target for the ATEM, web UI URL, countdown overlay URL
   for OBS, hostname, and all detected IPs (values are one-click selectable for copying).

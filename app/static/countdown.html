@@ -18,9 +18,12 @@
     text-shadow: 0 0 2vh rgba(0, 0, 0, 0.85);
     visibility: hidden;
   }
+  #timer.steady   { visibility: visible; color: #ffffff; }
   #timer.warn     { visibility: visible; color: #ff8c00; animation: blink 1s steps(1) infinite; }
   #timer.alert    { visibility: visible; color: #ff2020; animation: blink 1s steps(1) infinite; }
   #timer.critical { visibility: visible; color: #ff2020; animation: blink 0.2s steps(1) infinite; }
+  /* Clip en boucle : indicateur discret, fixe, sans compte à rebours. */
+  #timer.loop     { visibility: visible; color: #ffffff; font-size: 14vh; }
   @keyframes blink { 50% { opacity: 0.15; } }
 </style>
 </head>
@@ -31,7 +34,7 @@
   const timer = document.getElementById('timer');
   // Dernier état transport reçu + horodatage local pour interpoler entre
   // deux ticks websocket (le serveur ne pousse qu'une fois par seconde).
-  let remaining = 0, receivedAt = 0, playing = false, rate = 1, loaded = false;
+  let remaining = 0, receivedAt = 0, playing = false, rate = 1, loaded = false, loop = false;
 
   function applyTransport(t) {
     remaining = Number(t.remaining_seconds) || 0;
@@ -39,19 +42,30 @@
     playing = t.status === 'play' && !t.paused;
     rate = (Number(t.playback_speed_percent) || 100) / 100;
     loaded = t.status === 'play' || t.paused;
+    loop = Boolean(t.loop);
   }
 
   function render() {
+    // Clip en boucle : pas de fin réelle, donc pas de compte à rebours ni
+    // d'états clignotants — juste un ∞ discret tant que le deck est chargé.
+    if (loaded && loop) {
+      timer.textContent = '∞';
+      timer.className = 'loop';
+      return;
+    }
     let rem = remaining;
     if (playing) rem -= (performance.now() - receivedAt) / 1000 * rate;
     rem = Math.max(0, rem);
-    if (!loaded || rem > 60 || rem <= 0) {
+    if (!loaded || rem <= 0) {
       timer.className = '';
       return;
     }
     const whole = Math.ceil(rem);
-    timer.textContent = Math.floor(whole / 60) + ':' + String(whole % 60).padStart(2, '0');
-    timer.className = rem <= 10 ? 'critical' : rem <= 30 ? 'alert' : 'warn';
+    const m = Math.floor(whole / 60) % 60, s = String(whole % 60).padStart(2, '0');
+    timer.textContent = whole >= 3600
+      ? Math.floor(whole / 3600) + ':' + String(m).padStart(2, '0') + ':' + s
+      : m + ':' + s;
+    timer.className = rem <= 10 ? 'critical' : rem <= 30 ? 'alert' : rem <= 60 ? 'warn' : 'steady';
   }
 
   function connect() {

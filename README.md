@@ -301,6 +301,17 @@ Rough order, not hard dates. The cheap-Pi baseline always comes first; the heavi
 - ~~Safe-eject a drive from the storage panel~~ — ✅ done, see [SD card and USB drives](#sd-card-and-usb-drives-side-by-side).
 - ~~Repair button for a drive that fails to mount~~ — ✅ done, same panel.
 
+**Next → playlists that actually work**
+
+The backend already supports multiple playlists (per-item end behaviors, reorder, play-from, export/import), but the interaction model undermines it: the dropdown *selects* a playlist while the item list below always shows the *active* one, so the buttons act on a rundown you cannot see. Fixing the model comes first, then the rundown niceties:
+
+- **Browse ≠ activate**: picking a playlist in the dropdown shows *its* items immediately (read-only until activated), with a clear "● ACTIVE" marker on the one that plays. No more editing blind.
+- **Rename / duplicate / delete** a playlist — none of these exist today (with a guard on the active one).
+- **Explicit library mirroring**: the default playlist silently mirrors the media library until its first manual edit; surface that as a visible "MIRRORS LIBRARY" badge and a real toggle instead of implicit behavior.
+- **Drag & drop reordering**, keeping the ▲▼ arrows for touch screens.
+- **Rundown timing**: total playlist duration and time-remaining-to-end shown live — and fed to the `/countdown` overlay so the stage return can show "end of playlist in 12:40".
+- **A real NEXT**: big always-visible next-clip display with a frank GO button, instead of one small button lost in the toolbar.
+
 **Splitting the web UI, without a build step — ✅ done**
 
 The operator UI used to be one ~2,900-line vanilla JS file; it is now eleven native ES modules served as-is (still no framework, no build step, no new dependency, still gzipped): `store.js` holds the shared state behind a single sequence-guarded `applyState()` write path — a slow fetch response can never overwrite fresher WebSocket state — with `util`, `dom`, `dialogs`, and one module per panel (`media`, `preview`, `playlist`, `transport`, `settings`, `health`) around it, and `app.js` staying the entry that orchestrates fetch/WebSocket application. It was split one file per commit with the deck working at every step. Sub-modules answer `Cache-Control: no-cache`, so browsers revalidate them after an update; the guard and the module graph are covered by `tests/test_apply_path.mjs` and `tests/test_ui_modules.mjs`, both run in CI.

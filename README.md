@@ -96,6 +96,8 @@ Because of that split, unplugging a drive does not lose anything: its clips stay
 
 On a Pi appliance the installer wires up **USB auto-mount** (a udev rule + systemd unit) so a drive plugged in *after boot* mounts under `/media/deckpilot/<label>` — including NTFS and exFAT — even on headless Raspberry Pi OS Lite, which has no desktop automounter. Or use **Settings → Media Storage → Rescan**, which also lists every drive and its free space. The **STORAGE** tile on the health panel shows free / total of the internal disk.
 
+The same panel handles the drive's whole life cycle. **EJECT** flushes and unmounts a drive so it can be pulled without leaving the filesystem dirty — and refuses (rather than half-succeeds) while a clip is still playing from it. If a drive comes back dirty anyway and won't mount, it shows up in the list as *not mounted* with a **REPAIR** button: one click runs the right tool for its filesystem (`ntfsfix`, `fsck.vfat`, `fsck.exfat`, `e2fsck`) as root through the installer's constrained helper, then remounts it — no SSH session needed mid-show.
+
 ### Independent video and audio outputs
 
 Video and audio are routed separately, so you can keep the picture on HDMI to the switcher while the sound leaves through the analog jack or a USB interface. **Settings → Audio Output** probes the Pi's sound cards and collapses ALSA's raw PCM list down to plain choices: **Auto / HDMI / Jack / USB** (numbered when there are two of a kind). The change applies live and is saved to `config.json`, so it survives a reboot. Because the Pi's headphone jack is quiet by design, DeckPilot lifts the card's ALSA mixer to full level at startup so the on-screen volume slider works from a real signal.
@@ -296,8 +298,8 @@ Rough order, not hard dates. The cheap-Pi baseline always comes first; the heavi
 - Broader HyperDeck protocol coverage and a wider automated test suite.
 - Import diagnostics (tell the operator *why* a file was rejected or stalled).
 - First-run setup guide and clearer in-app errors.
-- Safe-eject a drive from the storage panel — flush and unmount so it can be pulled without leaving the filesystem dirty (the usual cause of a drive that won't remount).
-- Repair button for a drive that fails to mount — surface the corruption in the UI and offer a one-click `ntfsfix` / `fsck` instead of leaving the operator to the command line.
+- ~~Safe-eject a drive from the storage panel~~ — ✅ done, see [SD card and USB drives](#sd-card-and-usb-drives-side-by-side).
+- ~~Repair button for a drive that fails to mount~~ — ✅ done, same panel.
 
 **Splitting the web UI, without a build step — ✅ done**
 

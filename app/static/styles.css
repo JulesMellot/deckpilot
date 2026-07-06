@@ -824,6 +824,7 @@ header { grid-area: header; }
 .storage-device {
   display: flex;
   justify-content: space-between;
+  align-items: center;
   gap: 0.5rem;
   font-family: var(--font-mono);
   font-size: 0.78rem;
@@ -831,6 +832,16 @@ header { grid-area: header; }
   border: 1px solid var(--border-dim);
   border-left: 3px solid var(--color-accent);
   background: var(--bg-element);
+}
+
+.storage-device.is-unmounted {
+  border-left-color: var(--color-live);
+}
+
+.storage-device-action {
+  flex-shrink: 0;
+  font-size: 0.68rem;
+  padding: 0.15rem 0.5rem;
 }
 .storage-device.is-internal { border-left-color: var(--text-dim); }
 .storage-device-name { color: var(--text-main); }

@@ -16,6 +16,7 @@ from app.player.mpv_controller import MPVController
 from app.services.network_info import NetworkInfoService
 from app.services.output_manager import OutputManager
 from app.services.standby_slate import StandbySlateService
+from app.services import storage_maintenance
 from app.services.storage_devices import list_storage_devices
 from app.services.system_vitals import read_system_vitals
 
@@ -756,6 +757,7 @@ class DeckController:
         devices = await asyncio.to_thread(list_storage_devices, self.config.clips_dir)
         return {
             'devices': [device.to_dict() for device in devices],
+            'unmounted': await storage_maintenance.list_unmounted_removables(),
             'internal_path': self.config.clips_dir,
         }
 
@@ -763,6 +765,39 @@ class DeckController:
         """Re-scan every connected disk now (e.g. after plugging in a drive)."""
         await self.refresh_clips()
         return await self.list_storage_devices()
+
+    async def eject_storage_device(self, device_id: str) -> Dict[str, Any]:
+        """Safe-eject: flush and unmount a removable drive so it can be pulled."""
+        snapshot = await asyncio.to_thread(list_storage_devices, self.config.clips_dir)
+        target = next((d for d in snapshot if d.id == device_id), None)
+        if not target or target.is_internal or not target.removable:
+            return {'ok': False, 'message': 'Only a connected USB drive can be ejected.',
+                    **await self.list_storage_devices()}
+        ok, message = await storage_maintenance.eject_drive(target.device, target.mountpoint)
+        if ok:
+            await self.state.add_log('info', 'storage', f'Ejected {target.label} ({target.device}).')
+            # Clips from the drive drop to OFFLINE instead of lingering as live.
+            await self.refresh_clips()
+        else:
+            await self._report_error('storage', f'Eject of {target.label} failed: {message}')
+        return {'ok': ok, 'message': message, **await self.list_storage_devices()}
+
+    async def repair_storage_device(self, device: str) -> Dict[str, Any]:
+        """fsck/ntfsfix a removable drive that failed to mount, then remount it."""
+        # Only devices we ourselves listed as unmounted removables are eligible —
+        # the request can never point the repair tool at an arbitrary node.
+        candidates = await storage_maintenance.list_unmounted_removables()
+        target = next((c for c in candidates if c['device'] == device or c['name'] == device), None)
+        if not target:
+            return {'ok': False, 'message': 'Drive not found — it may have been mounted or unplugged. Rescan and retry.',
+                    **await self.list_storage_devices()}
+        ok, message = await storage_maintenance.repair_drive(target['device'])
+        if ok:
+            await self.state.add_log('info', 'storage', f'Repaired and remounted {target["label"]} ({target["device"]}).')
+            await self.refresh_clips()
+        else:
+            await self._report_error('storage', f'Repair of {target["label"]} failed: {message}')
+        return {'ok': ok, 'message': message, **await self.list_storage_devices()}
 
     async def slot_snapshot(self) -> Dict[str, Any]:
         clips = await self.clip_store.list_clips()

@@ -158,6 +158,14 @@ class FolderCreateRequest(BaseModel):
     name: str
 
 
+class StorageEjectRequest(BaseModel):
+    device_id: str
+
+
+class StorageRepairRequest(BaseModel):
+    device: str
+
+
 class PlaylistCreateRequest(BaseModel):
     name: str
     clip_ids: list[int] = []
@@ -378,6 +386,14 @@ def build_app(
     @app.post('/api/system/storage-rescan')
     async def rescan_storage() -> dict[str, Any]:
         return {'ok': True, **await controller.rescan_media()}
+
+    @app.post('/api/system/storage-eject')
+    async def eject_storage(payload: StorageEjectRequest) -> dict[str, Any]:
+        return await controller.eject_storage_device(payload.device_id)
+
+    @app.post('/api/system/storage-repair')
+    async def repair_storage(payload: StorageRepairRequest) -> dict[str, Any]:
+        return await controller.repair_storage_device(payload.device)
 
     @app.get('/api/system/update')
     async def get_update_status() -> dict[str, Any]:

@@ -19,6 +19,13 @@ into a new dated section, then `git tag v0.x.y`.
 - **Connections modal**: the ATEM target chip in the header now opens a dialog listing every
   address to point gear at — HyperDeck target for the ATEM, web UI URL, countdown overlay URL
   for OBS, hostname, and all detected IPs (values are one-click selectable for copying).
+- **Safe-eject and drive repair** (Settings → Media Storage): every USB drive row gets an
+  EJECT button (flush + strict unmount — refuses while a clip plays from the drive, never a
+  lazy unmount) and a plugged-in drive that failed to mount now appears as *not mounted* with
+  a REPAIR button that runs the right fsck tool (`ntfsfix` / `fsck.vfat` / `fsck.exfat` /
+  `e2fsck`) and remounts. Both go through the bootstrap's root helper via a constrained
+  sudoers entry; re-run `scripts/bootstrap.sh` once on existing installs to get the helper
+  (the in-app updater says so when it applies this change).
 
 ### Changed
 - **Web UI**: the ~2,900-line `app.js` monolith is now eleven native ES modules (`store`, `util`,

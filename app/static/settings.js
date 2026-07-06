@@ -38,10 +38,42 @@ export function renderAudioDevices(devices) {
 
 export async function loadStorageDevices() {
   const payload = await api('/api/system/storage-devices');
-  renderStorageDevices(payload.devices || []);
+  renderStorageDevices(payload);
 }
 
-export function renderStorageDevices(devices) {
+async function ejectDevice(device) {
+  const confirmed = await requestConfirm({
+    title: 'Safe Eject',
+    message: `Flush and unmount "${device.label}" so it can be unplugged safely? Its clips go OFFLINE until the drive comes back.`,
+    confirmLabel: 'EJECT',
+  });
+  if (!confirmed) return;
+  const result = await api('/api/system/storage-eject', {
+    method: 'POST',
+    body: JSON.stringify({ device_id: device.id }),
+  });
+  renderStorageDevices(result);
+  await showNotice('Safe Eject', result.message || (result.ok ? 'Drive ejected.' : 'Eject failed.'));
+}
+
+async function repairDevice(entry) {
+  const confirmed = await requestConfirm({
+    title: 'Repair Drive',
+    message: `Run a filesystem repair (${entry.fstype}) on "${entry.label}" and remount it? Only do this on a drive that refuses to mount.`,
+    confirmLabel: 'REPAIR',
+  });
+  if (!confirmed) return;
+  const result = await api('/api/system/storage-repair', {
+    method: 'POST',
+    body: JSON.stringify({ device: entry.device }),
+  });
+  renderStorageDevices(result);
+  await showNotice('Repair Drive', result.message || (result.ok ? 'Drive repaired.' : 'Repair failed.'));
+}
+
+export function renderStorageDevices(payload) {
+  const devices = payload?.devices || [];
+  const unmounted = payload?.unmounted || [];
   state.storageDevices = devices;
   const fragment = document.createDocumentFragment();
   devices.forEach((device) => {
@@ -56,9 +88,36 @@ export function renderStorageDevices(devices) {
     const percent = total > 0 ? ` (${Math.round((device.free_bytes / total) * 100)}%)` : '';
     free.textContent = `${formatBytes(device.free_bytes)} free / ${formatBytes(total)}${percent}`;
     row.append(name, free);
+    if (device.removable && !device.is_internal) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'action-btn storage-device-action';
+      btn.textContent = 'EJECT';
+      bindAsync(btn, 'click', () => ejectDevice(device), 'Safe Eject Error');
+      row.appendChild(btn);
+    }
     fragment.appendChild(row);
   });
-  if (!devices.length) {
+  unmounted.forEach((entry) => {
+    // A plugged-in drive nothing could mount — usually a dirty filesystem
+    // after an unclean pull. Offer the one-click repair instead of the shell.
+    const row = document.createElement('div');
+    row.className = 'storage-device is-unmounted';
+    const name = document.createElement('span');
+    name.className = 'storage-device-name';
+    name.textContent = `USB · ${entry.label}`;
+    const status = document.createElement('span');
+    status.className = 'storage-device-free';
+    status.textContent = `${entry.fstype} · not mounted (${formatBytes(entry.size_bytes)})`;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'action-btn storage-device-action';
+    btn.textContent = 'REPAIR';
+    bindAsync(btn, 'click', () => repairDevice(entry), 'Repair Error');
+    row.append(name, status, btn);
+    fragment.appendChild(row);
+  });
+  if (!devices.length && !unmounted.length) {
     const row = document.createElement('div');
     row.className = 'storage-device';
     row.textContent = 'No drives detected — plug in a USB drive and press RESCAN.';
@@ -399,7 +458,7 @@ bindAsync(DOM.configAudio, 'change', async (e) => {
 
 bindAsync(DOM.btnRescanStorage, 'click', async () => {
   const result = await api('/api/system/storage-rescan', { method: 'POST' });
-  renderStorageDevices(result.devices || []);
+  renderStorageDevices(result);
   const usbCount = (result.devices || []).filter((device) => !device.is_internal).length;
   await showNotice('Media Storage', usbCount
     ? `Rescanned — ${usbCount} USB drive(s) connected. New clips appear in the library.`

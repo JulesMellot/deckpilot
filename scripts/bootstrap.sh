@@ -277,7 +277,7 @@ install_packages_linux() {
     # cage + seatd: a Pi 3 only plays 1080p smoothly when mpv runs as a
     # dmabuf-wayland client of a nested compositor (cage), with seatd granting
     # the DRM seat to the headless service. Harmless extras on non-Pi Debian.
-    $SUDO apt-get install -y git curl rsync python3 python3-venv python3-pip ffmpeg mpv sqlite3 ntfs-3g exfatprogs cage seatd
+    $SUDO apt-get install -y git curl rsync python3 python3-venv python3-pip ffmpeg mpv sqlite3 ntfs-3g exfatprogs dosfstools cage seatd
   elif command_exists dnf; then
     $SUDO dnf install -y git curl rsync python3 python3-pip ffmpeg mpv sqlite ntfs-3g exfatprogs
   elif command_exists yum; then
@@ -416,6 +416,13 @@ run_user="${DECKPILOT_USER:-root}"
 
 log() { logger -t deckpilot-usb-mount -- "$*" 2>/dev/null || true; }
 
+# The web app calls eject/repair through passwordless sudo, so treat the
+# device argument as hostile: a bare kernel name only, and it must exist.
+case "$dev" in
+  ''|*[!a-zA-Z0-9]*) echo "invalid device name: $dev" >&2; exit 1 ;;
+esac
+[ -b "$node" ] || { echo "$node is not a block device" >&2; exit 1; }
+
 case "$cmd" in
   mount)
     fstype="$(blkid -o value -s TYPE "$node" 2>/dev/null || true)"
@@ -450,10 +457,59 @@ case "$cmd" in
       log "unmounted $node from $mp"
     fi
     ;;
+  eject)
+    # Safe-eject: flush, then a *strict* unmount — a busy drive (clip still
+    # playing from it) must fail loudly, never fall back to a lazy unmount
+    # that would let the operator pull a dirty filesystem.
+    mp="$(findmnt -n -o TARGET --source "$node" 2>/dev/null || true)"
+    [ -n "$mp" ] || { log "eject: $node not mounted"; exit 0; }
+    sync
+    if ! umount "$mp"; then
+      echo "Drive is busy — a clip on it may be playing or a copy still running. Stop it and retry." >&2
+      exit 1
+    fi
+    rmdir "$mp" 2>/dev/null || true
+    # Manual unmount already done; stopping the unit just keeps systemd's
+    # view consistent (its ExecStop unmount is a no-op by then).
+    systemctl stop "deckpilot-usb-mount@${dev}.service" 2>/dev/null || true
+    log "ejected $node from $mp"
+    ;;
+  repair)
+    fstype="$(blkid -o value -s TYPE "$node" 2>/dev/null || true)"
+    [ -n "$fstype" ] || { echo "No filesystem detected on $node — nothing to repair." >&2; exit 1; }
+    mp="$(findmnt -n -o TARGET --source "$node" 2>/dev/null || true)"
+    if [ -n "$mp" ]; then
+      sync
+      umount "$mp" || { echo "Drive is busy — stop playback from it and retry." >&2; exit 1; }
+      rmdir "$mp" 2>/dev/null || true
+    fi
+    # Exit codes: fsck-family tools return 1 (and e2fsck 2) after *fixing*
+    # errors — that is a success for our purposes, so tolerate those.
+    case "$fstype" in
+      ntfs|ntfs3)     ntfsfix -d "$node" ;;
+      vfat)           fsck.vfat -a "$node" || [ $? -le 1 ] ;;
+      exfat)          fsck.exfat -y "$node" || [ $? -le 1 ] ;;
+      ext2|ext3|ext4) e2fsck -f -p "$node" || [ $? -le 2 ] ;;
+      *) echo "No repair tool for filesystem type: $fstype" >&2; exit 1 ;;
+    esac
+    log "repaired $node ($fstype)"
+    # Remount through the systemd unit so ownership options come from its
+    # DECKPILOT_USER environment, same as a fresh plug-in.
+    systemctl restart "deckpilot-usb-mount@${dev}.service" 2>/dev/null || "$0" mount "$dev"
+    ;;
 esac
 EOF
   $SUDO chmod 755 "$helper_path"
   $SUDO chown root:root "$helper_path"
+
+  # The web UI's safe-eject / repair buttons call this helper as root; the
+  # helper validates its device argument, so this is the whole surface.
+  local sudoers_path="/etc/sudoers.d/91-deckpilot-usb-maintenance"
+  $SUDO mkdir -p /etc/sudoers.d
+  $SUDO tee "$sudoers_path" >/dev/null <<EOF
+$RUN_USER ALL=(root) NOPASSWD: $helper_path
+EOF
+  $SUDO chmod 440 "$sudoers_path"
 
   $SUDO tee "$unit_path" >/dev/null <<EOF
 [Unit]

@@ -19,6 +19,11 @@ into a new dated section, then `git tag v0.x.y`.
 - **Connections modal**: the ATEM target chip in the header now opens a dialog listing every
   address to point gear at — HyperDeck target for the ATEM, web UI URL, countdown overlay URL
   for OBS, hostname, and all detected IPs (values are one-click selectable for copying).
+- **SHUT DOWN button** (Settings, next to RESTART DECKPILOT): clean `systemctl poweroff`
+  through a dedicated root helper, so the operator can power the Pi off properly and unplug
+  without gambling with the SD card (a hard power cut during a write is the classic way a Pi
+  stops booting). Ships as a separate single-verb helper + sudoers entry installed by
+  `scripts/bootstrap.sh`; re-run it once on existing installs.
 - **Safe-eject and drive repair** (Settings → Media Storage): every USB drive row gets an
   EJECT button (flush + strict unmount — refuses while a clip plays from the drive, never a
   lazy unmount) and a plugged-in drive that failed to mount now appears as *not mounted* with

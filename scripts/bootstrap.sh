@@ -365,28 +365,35 @@ setup_python_env() {
 }
 
 install_reboot_helper() {
+  # One single-verb helper per action (reboot for updates, poweroff for the
+  # web UI's SHUTDOWN button) — each does exactly one thing, so the NOPASSWD
+  # sudoers entries never expose an argument surface.
   command_exists systemctl || return 0
   command_exists sudo || return 0
 
-  local helper_path="/usr/local/bin/deckpilot-system-reboot"
-  local sudoers_path="/etc/sudoers.d/90-deckpilot-system-reboot"
   local systemctl_path
   systemctl_path="$(command -v systemctl)"
   [[ -n "$systemctl_path" ]] || return 0
 
-  $SUDO tee "$helper_path" >/dev/null <<EOF
+  local verb helper_path sudoers_path
+  for verb in reboot poweroff; do
+    helper_path="/usr/local/bin/deckpilot-system-${verb}"
+    sudoers_path="/etc/sudoers.d/90-deckpilot-system-${verb}"
+
+    $SUDO tee "$helper_path" >/dev/null <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-exec $systemctl_path reboot
+exec $systemctl_path $verb
 EOF
-  $SUDO chmod 755 "$helper_path"
-  $SUDO chown root:root "$helper_path"
+    $SUDO chmod 755 "$helper_path"
+    $SUDO chown root:root "$helper_path"
 
-  $SUDO mkdir -p /etc/sudoers.d
-  $SUDO tee "$sudoers_path" >/dev/null <<EOF
+    $SUDO mkdir -p /etc/sudoers.d
+    $SUDO tee "$sudoers_path" >/dev/null <<EOF
 $RUN_USER ALL=(root) NOPASSWD: $helper_path
 EOF
-  $SUDO chmod 440 "$sudoers_path"
+    $SUDO chmod 440 "$sudoers_path"
+  done
 }
 
 install_usb_automount() {

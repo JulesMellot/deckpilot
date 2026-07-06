@@ -1043,6 +1043,10 @@ header { grid-area: header; }
 }
 .danger-btn:hover { background: var(--color-live); color: #fff; }
 
+/* Inline red variant for destructive settings actions (e.g. SHUT DOWN). */
+.action-btn-danger { border-color: var(--color-live); color: #ffaaaa; }
+.action-btn-danger:hover { background: var(--color-live); color: #fff; }
+
 /* ==========================================================================
    CENTER PANEL : MEDIA POOL
    ========================================================================== */

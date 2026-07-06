@@ -144,6 +144,7 @@ export const DOM = {
   configEditor: document.getElementById('config-editor'),
   btnSaveConfig: document.getElementById('btn-save-config'),
   btnRestartApp: document.getElementById('btn-restart-app'),
+  btnShutdown: document.getElementById('btn-shutdown'),
   btnRunUpdate: document.getElementById('btn-run-update'),
   btnExportLibrary: document.getElementById('btn-export-library'),
   btnImportLibrary: document.getElementById('btn-import-library'),

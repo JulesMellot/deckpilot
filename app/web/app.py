@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import platform
 import signal
 import sqlite3
 from pathlib import Path
@@ -455,6 +456,26 @@ def build_app(
         await asyncio.to_thread(_write_config_updates, config_path, updates)
         await state.add_log('info', 'system', f'Configuration updated ({", ".join(updates)}). Restart required.')
         return {'ok': True, 'updated': list(updates), 'restart_required': True}
+
+    @app.post('/api/system/shutdown')
+    async def shutdown_system() -> dict[str, Any]:
+        # The Pi has no power button; a clean poweroff lets the operator unplug
+        # without gambling with the SD card. Root comes from the bootstrap's
+        # single-verb helper, same pattern as the update reboot.
+        helper = '/usr/local/bin/deckpilot-system-poweroff'
+        if platform.system().lower() != 'linux' or not Path(helper).exists():
+            return {'ok': False, 'message': 'Shutdown needs the power-off helper — re-run scripts/bootstrap.sh once on the Pi.'}
+        await state.add_log('info', 'system', 'Shutdown requested from the web UI.')
+        process = await asyncio.create_subprocess_exec(
+            'sudo', '-n', helper,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        out, _ = await process.communicate()
+        if process.returncode != 0:
+            detail = out.decode('utf-8', errors='replace').strip()
+            return {'ok': False, 'message': detail or 'Power-off command failed — re-run scripts/bootstrap.sh once on the Pi.'}
+        return {'ok': True, 'message': 'Powering off...'}
 
     @app.post('/api/system/restart')
     async def restart_application() -> dict[str, Any]:

@@ -217,7 +217,7 @@ The reference target is a Raspberry Pi 3B+ with 1 GB of RAM, and the design refl
 curl -fsSL https://raw.githubusercontent.com/JulesMellot/deckpilot/main/scripts/bootstrap.sh | bash
 ```
 
-Run it from your normal user account — do **not** `sudo su` into a root shell first. On a Pi the bootstrap also installs the systemd service, the HDMI boot-info screen, an SMB share of the clips folder (`\\<pi>\DeckPilot`, guest write — skip it with `--skip-smb`), and a small privileged helper that lets web-triggered updates reboot the Pi when an update touches appliance-level components.
+Run it from your normal user account — do **not** `sudo su` into a root shell first. On a Pi the bootstrap also installs the systemd service, the HDMI boot-info screen, an SMB share of the clips folder (`\\<pi>\DeckPilot`, guest write — skip it with `--skip-smb`), and small single-verb privileged helpers that let web-triggered updates reboot the Pi and the Settings panel's **SHUT DOWN** button power it off cleanly — so the operator never has to yank the plug on a live filesystem.
 
 ### Windows (experimental)
 

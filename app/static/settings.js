@@ -394,6 +394,27 @@ bindAsync(DOM.btnRestartApp, 'click', async () => {
   await showNotice('Restarting', 'DeckPilot is restarting — the interface will reconnect automatically.');
 }, 'Restart Error');
 
+bindAsync(DOM.btnShutdown, 'click', async () => {
+  const confirmed = await requestConfirm({
+    title: 'Shut Down',
+    message: 'Power off the Raspberry Pi now? Playback stops. After the screen goes black, wait until the green LED stops blinking (~10 s), then unplug safely.',
+    confirmLabel: 'SHUT DOWN',
+  });
+  if (!confirmed) return;
+  let result;
+  try {
+    result = await api('/api/system/shutdown', { method: 'POST' });
+  } catch (error) {
+    // The Pi can power off before the response leaves — that is a success.
+    result = { ok: true };
+  }
+  if (result.ok === false) {
+    await showNotice('Shutdown Error', result.message || 'Shutdown is not available on this installation.');
+    return;
+  }
+  await showNotice('Shutting Down', 'The Pi is powering off — wait until the green LED stops blinking (~10 s), then unplug.');
+}, 'Shutdown Error');
+
 bindAsync(DOM.btnRunUpdate, 'click', async () => {
   const updateStatus = state.updateStatus;
   let updateMessage = 'DeckPilot will pull the latest version and restart automatically if needed. Continue?';

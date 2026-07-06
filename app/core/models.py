@@ -26,6 +26,8 @@ class ClipRecord:
     # failure, unreadable file, ...). Empty for every other state.
     error_reason: str = ""
     loop_enabled: bool = False
+    # A music bed: excluded from the on-air countdown wherever it appears.
+    is_music: bool = False
     is_builtin: bool = False
     mark_in_seconds: float = 0.0
     mark_out_seconds: float = 0.0
@@ -79,6 +81,9 @@ class TransportState:
     paused: bool = False
     elapsed_seconds: float = 0.0
     remaining_seconds: float = 0.0
+    # Music-aware countdown: current clip remainder plus the playlist items
+    # that follow, stopping before the first item flagged as music.
+    countdown_seconds: float = 0.0
     total_seconds: float = 0.0
     mark_in_seconds: float = 0.0
     mark_out_seconds: float = 0.0
@@ -146,6 +151,7 @@ class PlaylistItem:
     loop_enabled: bool = False
     auto_advance: bool = False
     end_behavior: str = "next"
+    is_music: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

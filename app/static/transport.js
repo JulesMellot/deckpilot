@@ -202,23 +202,25 @@ export function renderNextClip(transport) {
   let nextItem = items.find((item) => item.position === position + 1) || null;
   if (!nextItem && transport.playlist_loop) nextItem = items[0] || null;
   const remaining = Math.max(0, effectiveOutSeconds(transport) - displayedTransportElapsed(transport));
+  // Countdown musique : cumul des vidéos restantes jusqu'au premier item ♪.
+  const countdown = Math.max(0, Number(transport.countdown_seconds != null ? transport.countdown_seconds : remaining));
   DOM.nextClipBar.hidden = false;
   if (transport.loop || behavior === 'stop' || behavior === 'hold') {
     DOM.nextClipBar.classList.add('is-terminal');
     DOM.nextClipName.textContent = transport.loop
       ? 'LOOPING CURRENT CLIP'
       : (behavior === 'hold' ? 'HOLD ON LAST FRAME' : 'STOP AT END');
-    DOM.nextClipCountdown.textContent = transport.loop ? '∞' : formatRemainingClock(remaining);
+    DOM.nextClipCountdown.textContent = transport.loop ? '∞' : formatRemainingClock(countdown);
     return;
   }
   if (nextItem) {
     DOM.nextClipBar.classList.remove('is-terminal');
-    DOM.nextClipName.textContent = nextItem.clip_name;
+    DOM.nextClipName.textContent = nextItem.is_music ? `♪ ${nextItem.clip_name}` : nextItem.clip_name;
   } else {
     DOM.nextClipBar.classList.add('is-terminal');
     DOM.nextClipName.textContent = 'END OF PLAYLIST';
   }
-  DOM.nextClipCountdown.textContent = formatRemainingClock(remaining);
+  DOM.nextClipCountdown.textContent = current?.is_music ? '♪' : formatRemainingClock(countdown);
 }
 
 export function ensureAudioLevels(clipId, clip) {

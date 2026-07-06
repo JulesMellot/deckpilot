@@ -59,6 +59,10 @@ class DeckController:
         self._output_canvas_mode: str = 'auto'
         self._playlist_mode = False
         self._playlist_loop = False
+        # Music-aware countdown: seconds contributed by the playlist items that
+        # follow the current clip, up to (excluding) the first music-flagged item.
+        self._countdown_extra_seconds = 0.0
+        self._countdown_in_music = False
         self._last_clip_sync_at: float | None = None
         self._last_error: str | None = None
         self._last_error_key: str | None = None
@@ -114,6 +118,8 @@ class DeckController:
     async def refresh_clips(self, settle_paths: set[str] | None = None) -> None:
         await self.clip_store.sync_with_disk(settle_paths)
         await self.playlist_store.sync_active_playlist_from_clips()
+        if self._playlist_mode and self.current_clip_id:
+            await self._refresh_playlist_countdown(self.current_clip_id)
         await self._publish_media_state()
 
     async def add_remote_clip(self, url: str, name: str | None = None) -> str:
@@ -246,6 +252,7 @@ class DeckController:
         use_loop = clip.loop_enabled if loop is None else loop
         was_cued_clip = self.current_clip_id == clip.deck_id and self.state.transport.clip_id == clip.deck_id
         self.current_clip_id = clip.deck_id
+        await self._refresh_playlist_countdown(clip.deck_id)
         if (
             was_cued_clip
             and self.state.transport.paused
@@ -277,6 +284,7 @@ class DeckController:
                 paused=False,
                 total_seconds=clip.duration_seconds,
                 remaining_seconds=self.state.transport.remaining_seconds or clip.duration_seconds,
+                countdown_seconds=self._countdown_for(self.state.transport.remaining_seconds or clip.duration_seconds),
                 elapsed_seconds=self.state.transport.elapsed_seconds,
                 video_format=self.state.transport.video_format,
                 playlist_mode=self._playlist_mode,
@@ -307,6 +315,7 @@ class DeckController:
             paused=False,
             total_seconds=clip.duration_seconds,
             remaining_seconds=max(0.0, out_point - in_point),
+            countdown_seconds=self._countdown_for(max(0.0, out_point - in_point)),
             elapsed_seconds=in_point,
             timecode=seconds_to_timecode(in_point, clip.framerate),
             display_timecode=seconds_to_timecode(in_point, clip.framerate),
@@ -461,6 +470,8 @@ class DeckController:
         self._accumulated_pause_seconds = 0.0
         self._speed = 1.0
         self._playlist_mode = False
+        self._countdown_extra_seconds = 0.0
+        self._countdown_in_music = False
         await self.state.set_transport(
             status='stopped',
             speed=0,
@@ -468,6 +479,7 @@ class DeckController:
             paused=False,
             elapsed_seconds=0.0,
             remaining_seconds=self.state.transport.total_seconds,
+            countdown_seconds=0.0,
             timecode='00:00:00:00',
             display_timecode='00:00:00:00',
             playlist_mode=False,
@@ -556,6 +568,12 @@ class DeckController:
                 await self._report_error('player', f'Loop update failed: {self.player.last_error or "unknown player error"}')
             await self.state.set_transport(loop=enabled)
             await self._publish_health()
+        await self.refresh_clips()
+
+    async def set_clip_music(self, deck_id: int, enabled: bool) -> None:
+        await self.clip_store.set_music(deck_id, enabled)
+        # refresh_clips republishes the playlist payload and recomputes the
+        # countdown, so the flag takes effect immediately, even mid-playback.
         await self.refresh_clips()
 
     async def delete_clip(self, deck_id: int) -> None:
@@ -990,11 +1008,51 @@ class DeckController:
         await self.state.set_transport(
             elapsed_seconds=elapsed,
             remaining_seconds=remaining,
+            countdown_seconds=self._countdown_for(remaining),
             total_seconds=clip.duration_seconds,
             timecode=timecode,
             display_timecode=timecode,
             **self._mark_transport_fields(clip),
         )
+
+    def _countdown_for(self, remaining: float) -> float:
+        """The on-air countdown: nothing while music plays, otherwise the
+        current clip remainder plus the pre-music playlist items after it."""
+        if self._countdown_in_music:
+            return 0.0
+        return max(0.0, float(remaining or 0.0)) + self._countdown_extra_seconds
+
+    async def _refresh_playlist_countdown(self, clip_id: int) -> None:
+        """Recompute what the countdown covers: the auto-advance chain after the
+        current item, stopping before the first item flagged as music and after
+        any item that ends the chain (stop/hold/loop)."""
+        self._countdown_extra_seconds = 0.0
+        self._countdown_in_music = False
+        if not self._playlist_mode:
+            return
+        playlist = await self.playlist_store.get_active_playlist()
+        items = playlist.get('items', [])
+        position = next((item['position'] for item in items if item['clip_id'] == clip_id), 0)
+        if position <= 0:
+            return
+        current = items[position - 1]
+        if current.get('is_music'):
+            self._countdown_in_music = True
+            return
+        if (current.get('end_behavior') or 'next') != 'next':
+            return
+        clip_map = {entry.deck_id: entry for entry in await self.clip_store.list_clips()}
+        extra = 0.0
+        for item in items[position:]:
+            if item.get('is_music'):
+                break
+            entry = clip_map.get(item['clip_id'])
+            if entry:
+                in_point, out_point = entry.trim_bounds()
+                extra += max(0.0, out_point - in_point)
+            if (item.get('end_behavior') or 'next') != 'next':
+                break
+        self._countdown_extra_seconds = extra
 
     def _mark_transport_fields(self, clip) -> Dict[str, Any]:
         in_point, out_point = clip.trim_bounds()

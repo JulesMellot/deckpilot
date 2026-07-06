@@ -3,7 +3,7 @@
 
 import { api } from './util.js';
 import { DOM, Templates } from './dom.js';
-import { getSelectedClip, playlistItemFromPosition, pruneNodeCache, state } from './store.js';
+import { getSelectedClip, playlistItemFromPosition, pruneNodeCache, state, viewedPlaylistPayload } from './store.js';
 import { bindAsync, requestConfirm, requestText } from './dialogs.js';
 import { syncMediaGridVisualState } from './media.js';
 import { renderPreview } from './preview.js';
@@ -48,7 +48,7 @@ export function ensurePlaylistRenderLimit(items, playlistId) {
 }
 
 export function maybeLoadMorePlaylist(force = false) {
-  const items = state.snapshot?.playlist?.items || [];
+  const items = viewedPlaylistPayload().items || [];
   if (!state.playlistVirtualEnabled) return false;
   if (state.playlistRenderLimit >= items.length) return false;
   const nearBottom = DOM.playlistItems.scrollTop + DOM.playlistItems.clientHeight >= DOM.playlistItems.scrollHeight - 400;
@@ -56,7 +56,7 @@ export function maybeLoadMorePlaylist(force = false) {
   const nextLimit = Math.min(items.length, state.playlistRenderLimit + PLAYLIST_VIRTUALIZATION_BATCH);
   if (nextLimit === state.playlistRenderLimit) return false;
   state.playlistRenderLimit = nextLimit;
-  renderPlaylist(state.snapshot?.playlist || { playlist: null, items: [] }, state.snapshot?.transport?.clip_id);
+  renderPlaylist(viewedPlaylistPayload(), state.snapshot?.transport?.clip_id);
   return true;
 }
 
@@ -93,12 +93,26 @@ export function updatePlaylistNode(node, item, activeClipId) {
   endNode.classList.toggle('is-stop', behavior === 'stop');
   endNode.classList.toggle('is-hold', behavior === 'hold');
   endNode.classList.toggle('is-loop', behavior === 'loop');
+  node.querySelector('.playlist-item-music').classList.toggle('is-on', Boolean(item.is_music));
   node.classList.toggle('active', item.clip_id === activeClipId);
   node.classList.toggle('selected', item.position === state.selectedPlaylistPosition);
 }
 
 export function currentPlaylistId() {
   return Number(DOM.playlistSelect.value || state.snapshot?.playlist?.playlist?.id || 0);
+}
+
+// The panel edits the playlist chosen in the dropdown, active or not. For a
+// non-active playlist (no WebSocket push), fetch its items explicitly.
+export async function refreshViewedPlaylist() {
+  const playlistId = currentPlaylistId();
+  const activeId = state.snapshot?.playlist?.playlist?.id;
+  if (!playlistId || playlistId === activeId) {
+    state.viewedPlaylist = null;
+  } else {
+    state.viewedPlaylist = await api(`/api/playlists/${playlistId}`);
+  }
+  renderPlaylist(viewedPlaylistPayload(), state.snapshot?.transport?.clip_id);
 }
 
 export async function playPlaylist() {
@@ -132,12 +146,13 @@ export async function clearCurrentPlaylist() {
   if (!playlistId) return;
   const confirmed = await requestConfirm({
     title: 'Clear Playlist',
-    message: 'Remove every item from the active playlist?',
+    message: 'Remove every item from this playlist?',
     confirmLabel: 'CLEAR'
   });
   if (!confirmed) return;
   await api(`/api/playlists/${playlistId}/items`, { method: 'DELETE' });
   state.selectedPlaylistPosition = 1;
+  await refreshViewedPlaylist();
   await refresh();
 }
 
@@ -149,6 +164,7 @@ export async function addSelectedClipToPlaylist() {
     method: 'POST',
     body: JSON.stringify({ clip_id: clip.deck_id })
   });
+  await refreshViewedPlaylist();
   await refresh();
 }
 
@@ -193,13 +209,13 @@ export function renderPlaylist(playlistPayload, activeClipId) {
 
 export function syncPlaylistVisualState(activeClipId = state.snapshot?.transport?.clip_id) {
   if (state.playlistVirtualEnabled) {
-    const items = state.snapshot?.playlist?.items || [];
+    const items = viewedPlaylistPayload().items || [];
     const selectedIndex = items.findIndex((item) => item.position === state.selectedPlaylistPosition);
     const activeIndex = items.findIndex((item) => item.clip_id === activeClipId);
     const requiredLimit = Math.max(selectedIndex, activeIndex) + 1;
     if (requiredLimit > state.playlistRenderLimit) {
       state.playlistRenderLimit = Math.min(items.length, requiredLimit + 10);
-      renderPlaylist(state.snapshot?.playlist || { playlist: null, items: [] }, activeClipId);
+      renderPlaylist(viewedPlaylistPayload(), activeClipId);
       return;
     }
   }
@@ -217,6 +233,7 @@ DOM.playlistItems.addEventListener('scroll', () => {
 bindAsync(DOM.playlistItems, 'click', async (event) => {
   const removeNode = event.target.closest('.playlist-item-remove');
   const endNode = event.target.closest('.playlist-item-end');
+  const musicNode = event.target.closest('.playlist-item-music');
   const moveNode = event.target.closest('.playlist-item-move');
   const playlistNode = event.target.closest('.playlist-item');
   if (!playlistNode) return;
@@ -224,20 +241,32 @@ bindAsync(DOM.playlistItems, 'click', async (event) => {
   if (!item) return;
   if (endNode) {
     event.stopPropagation();
-    const playlistId = state.snapshot?.playlist?.playlist?.id;
+    const playlistId = currentPlaylistId();
     if (!playlistId) return;
     const nextBehavior = END_BEHAVIOR_CYCLE[(END_BEHAVIOR_CYCLE.indexOf(item.end_behavior || 'next') + 1) % END_BEHAVIOR_CYCLE.length];
     await api(`/api/playlists/${playlistId}/items/${item.position}`, {
       method: 'PATCH',
       body: JSON.stringify({ end_behavior: nextBehavior }),
     });
+    await refreshViewedPlaylist();
+    return;
+  }
+  if (musicNode) {
+    event.stopPropagation();
+    const playlistId = currentPlaylistId();
+    if (!playlistId) return;
+    await api(`/api/playlists/${playlistId}/items/${item.position}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ is_music: !item.is_music }),
+    });
+    await refreshViewedPlaylist();
     return;
   }
   if (moveNode) {
     event.stopPropagation();
-    const playlistId = state.snapshot?.playlist?.playlist?.id;
+    const playlistId = currentPlaylistId();
     if (!playlistId) return;
-    const items = state.snapshot?.playlist?.items || [];
+    const items = viewedPlaylistPayload().items || [];
     const positions = items.map((entry) => entry.position);
     const index = positions.indexOf(item.position);
     const target = index + (moveNode.dataset.role === 'move-up' ? -1 : 1);
@@ -248,13 +277,15 @@ bindAsync(DOM.playlistItems, 'click', async (event) => {
       method: 'POST',
       body: JSON.stringify({ positions }),
     });
+    await refreshViewedPlaylist();
     return;
   }
   if (removeNode) {
     event.stopPropagation();
-    const playlistId = state.snapshot?.playlist?.playlist?.id;
+    const playlistId = currentPlaylistId();
     if (!playlistId) return;
     await api(`/api/playlists/${playlistId}/items/${item.position}`, { method: 'DELETE' });
+    await refreshViewedPlaylist();
     await refresh();
     return;
   }
@@ -271,14 +302,22 @@ bindAsync(DOM.playlistItems, 'dblclick', async (event) => {
   const playlistNode = event.target.closest('.playlist-item');
   if (!playlistNode) return;
   const item = playlistItemFromPosition(playlistNode.dataset.position);
-  const playlistId = state.snapshot?.playlist?.playlist?.id;
+  const playlistId = currentPlaylistId();
   if (!item || !playlistId) return;
   state.selectedPlaylistPosition = item.position;
   syncPlaylistVisualState();
+  // The server activates the playlist if needed; the panel then mirrors it.
   await api(`/api/playlists/${playlistId}/play-from`, {
     method: 'POST',
     body: JSON.stringify({ position: item.position })
   });
+  state.viewedPlaylist = null;
+  await refresh();
+}, 'Playlist Error');
+
+bindAsync(DOM.playlistSelect, 'change', async () => {
+  state.selectedPlaylistPosition = 1;
+  await refreshViewedPlaylist();
 }, 'Playlist Error');
 
 bindAsync(DOM.btnNewPlaylist, 'click', async () => {
@@ -288,10 +327,48 @@ bindAsync(DOM.btnNewPlaylist, 'click', async () => {
     confirmLabel: 'CREATE'
   });
   if (!name) return;
-  await api('/api/playlists', {
+  const created = await api('/api/playlists', {
     method: 'POST',
     body: JSON.stringify({ name, clip_ids: [], activate: false })
   });
+  await refresh();
+  // Jump straight into the new (empty) playlist so ADD SELECTED lands in it.
+  if (created?.playlist?.id) {
+    DOM.playlistSelect.value = String(created.playlist.id);
+    await refreshViewedPlaylist();
+  }
+}, 'Playlist Error');
+
+bindAsync(DOM.btnRenamePlaylist, 'click', async () => {
+  const playlistId = currentPlaylistId();
+  if (!playlistId) return;
+  const playlist = state.playlists.find((entry) => entry.id === playlistId);
+  const name = await requestText({
+    title: 'Rename Playlist',
+    message: 'Nouveau nom :',
+    inputValue: playlist?.name || '',
+    confirmLabel: 'RENAME'
+  });
+  if (!name || name === playlist?.name) return;
+  await api(`/api/playlists/${playlistId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ name })
+  });
+  await refresh();
+}, 'Playlist Error');
+
+bindAsync(DOM.btnDeletePlaylist, 'click', async () => {
+  const playlistId = currentPlaylistId();
+  if (!playlistId) return;
+  const playlist = state.playlists.find((entry) => entry.id === playlistId);
+  const confirmed = await requestConfirm({
+    title: 'Delete Playlist',
+    message: `Supprimer la playlist "${playlist?.name || playlistId}" et son contenu ?`,
+    confirmLabel: 'DELETE'
+  });
+  if (!confirmed) return;
+  await api(`/api/playlists/${playlistId}`, { method: 'DELETE' });
+  state.viewedPlaylist = null;
   await refresh();
 }, 'Playlist Error');
 
@@ -299,6 +376,7 @@ bindAsync(DOM.btnActivatePlaylist, 'click', async () => {
   const playlistId = currentPlaylistId();
   if (!playlistId) return;
   await api(`/api/playlists/${playlistId}/activate`, { method: 'POST' });
+  state.viewedPlaylist = null;
   await refresh();
 }, 'Playlist Error');
 

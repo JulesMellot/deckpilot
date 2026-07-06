@@ -218,6 +218,9 @@ class ClipStore:
                 conn.execute("ALTER TABLE clips ADD COLUMN is_remote INTEGER NOT NULL DEFAULT 0")
             if 'error_reason' not in columns:
                 conn.execute("ALTER TABLE clips ADD COLUMN error_reason TEXT NOT NULL DEFAULT ''")
+            if 'is_music' not in columns:
+                # Music clips never count toward the on-air countdown.
+                conn.execute("ALTER TABLE clips ADD COLUMN is_music INTEGER NOT NULL DEFAULT 0")
             conn.execute("INSERT OR IGNORE INTO media_folders (name) VALUES ('Library')")
             conn.execute("INSERT OR IGNORE INTO media_folders (name) VALUES ('System')")
             conn.commit()
@@ -917,7 +920,7 @@ class ClipStore:
                 '''
                 SELECT id, sort_order, name, folder, filename, filepath, duration_seconds,
                        duration_timecode, framerate, codec, width, height, media_kind,
-                       is_vertical, thumbnail_path, processing_state, error_reason, loop_enabled, is_builtin, is_remote,
+                       is_vertical, thumbnail_path, processing_state, error_reason, loop_enabled, is_music, is_builtin, is_remote,
                        mark_in_seconds, mark_out_seconds, tags,
                        (CASE WHEN audio_levels IS NOT NULL AND LENGTH(audio_levels) > 2 THEN 1 ELSE 0 END) AS has_audio_levels
                 FROM clips ORDER BY sort_order ASC, id ASC
@@ -949,6 +952,7 @@ class ClipStore:
                     processing_state=row['processing_state'] or 'ready',
                     error_reason=row['error_reason'] or '',
                     loop_enabled=bool(row['loop_enabled']),
+                    is_music=bool(row['is_music']),
                     is_builtin=bool(row['is_builtin']),
                     mark_in_seconds=float(row['mark_in_seconds'] or 0.0),
                     mark_out_seconds=float(row['mark_out_seconds'] or 0.0),
@@ -1190,6 +1194,19 @@ class ClipStore:
             conn.commit()
         self._invalidate_clips_cache()
 
+    async def set_music(self, deck_id: int, enabled: bool) -> ClipRecord | None:
+        await asyncio.to_thread(self._set_music_sync, deck_id, enabled)
+        return await self.get_clip(deck_id)
+
+    def _set_music_sync(self, deck_id: int, enabled: bool) -> None:
+        with self._connect() as conn:
+            row_id = self._row_id_for_deck(conn, deck_id)
+            if row_id is None:
+                return
+            conn.execute('UPDATE clips SET is_music = ? WHERE id = ?', (1 if enabled else 0, row_id))
+            conn.commit()
+        self._invalidate_clips_cache()
+
     async def set_marks(
         self,
         deck_id: int,
@@ -1280,6 +1297,7 @@ class ClipStore:
                 'name': clip.name,
                 'folder': clip.folder,
                 'loop_enabled': clip.loop_enabled,
+                'is_music': clip.is_music,
                 'mark_in_seconds': clip.mark_in_seconds,
                 'mark_out_seconds': clip.mark_out_seconds,
                 'tags': clip.tags,
@@ -1308,6 +1326,7 @@ class ClipStore:
                     'name': str(entry.get('name') or filename),
                     'folder': folder,
                     'loop_enabled': 1 if entry.get('loop_enabled') else 0,
+                    'is_music': 1 if entry.get('is_music') else 0,
                     'mark_in_seconds': max(0.0, float(entry.get('mark_in_seconds') or 0.0)),
                     'mark_out_seconds': max(0.0, float(entry.get('mark_out_seconds') or 0.0)),
                     'tags': normalize_tags(str(entry.get('tags') or '')),

@@ -775,6 +775,23 @@ header { grid-area: header; }
 .playlist-item-end.is-hold { color: #ff9f1a; border-color: rgba(255, 159, 26, 0.5); }
 .playlist-item-end.is-loop { color: var(--color-accent); border-color: rgba(0, 122, 204, 0.5); }
 
+/* Music flag: the on-air countdown stops before this item. */
+.playlist-item-music {
+  font-size: 0.7rem;
+  padding: 0.1rem 0.3rem;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--text-dim);
+  opacity: 0.35;
+  flex-shrink: 0;
+}
+
+.playlist-item-music.is-on {
+  opacity: 1;
+  color: #c77dff;
+  border-color: rgba(199, 125, 255, 0.5);
+}
+
 .playlist-item-move {
   font-size: 0.6rem;
   color: var(--text-dim);
@@ -1573,6 +1590,7 @@ header { grid-area: header; }
 .ctrl-btn.play:hover { color: var(--color-ready); }
 .ctrl-btn.danger:hover { color: var(--color-live); }
 .ctrl-btn.active-loop { color: var(--color-accent); }
+.ctrl-btn.active-music { color: #c77dff; }
 
 /* ==========================================================================
    RIGHT PANEL : AUDIO & SETTINGS

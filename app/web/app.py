@@ -80,8 +80,9 @@ class DurationRequest(BaseModel):
     seconds: float
 
 
-class EndBehaviorRequest(BaseModel):
-    end_behavior: str
+class PlaylistItemPatchRequest(BaseModel):
+    end_behavior: str | None = None
+    is_music: bool | None = None
 
 
 class PlaylistReorderRequest(BaseModel):
@@ -315,6 +316,25 @@ def build_app(
         await playlist_store.activate_playlist(playlist_id)
         return {'ok': True, 'playlists': await playlist_store.list_playlists(), 'active': await playlist_store.get_active_playlist()}
 
+    @app.get('/api/playlists/{playlist_id}')
+    async def get_playlist(playlist_id: int) -> dict[str, Any]:
+        payload = await playlist_store.get_playlist(playlist_id)
+        if not payload.get('playlist'):
+            raise HTTPException(status_code=404, detail='Playlist not found')
+        return payload
+
+    @app.patch('/api/playlists/{playlist_id}')
+    async def rename_playlist(playlist_id: int, payload: RenameRequest) -> dict[str, Any]:
+        if not await playlist_store.rename_playlist(playlist_id, payload.name):
+            raise HTTPException(status_code=400, detail='Invalid or duplicate playlist name')
+        return {'ok': True, 'playlists': await playlist_store.list_playlists(), 'active': await playlist_store.get_active_playlist()}
+
+    @app.delete('/api/playlists/{playlist_id}')
+    async def delete_playlist(playlist_id: int) -> dict[str, Any]:
+        if not await playlist_store.delete_playlist(playlist_id):
+            raise HTTPException(status_code=404, detail='Playlist not found')
+        return {'ok': True, 'playlists': await playlist_store.list_playlists(), 'active': await playlist_store.get_active_playlist()}
+
     @app.post('/api/playlists/{playlist_id}/items')
     async def add_playlist_item(playlist_id: int, payload: PlaylistItemRequest) -> dict[str, Any]:
         await playlist_store.add_clip_to_playlist(playlist_id, payload.clip_id)
@@ -352,10 +372,15 @@ def build_app(
         return {'ok': True, 'active': await playlist_store.get_active_playlist()}
 
     @app.patch('/api/playlists/{playlist_id}/items/{position}')
-    async def set_playlist_item_behavior(playlist_id: int, position: int, payload: EndBehaviorRequest) -> dict[str, Any]:
-        ok_flag = await playlist_store.set_item_end_behavior(playlist_id, position, payload.end_behavior)
-        if not ok_flag:
-            raise HTTPException(status_code=400, detail='Invalid item or end behavior')
+    async def patch_playlist_item(playlist_id: int, position: int, payload: PlaylistItemPatchRequest) -> dict[str, Any]:
+        if payload.end_behavior is None and payload.is_music is None:
+            raise HTTPException(status_code=400, detail='Nothing to update')
+        if payload.end_behavior is not None:
+            if not await playlist_store.set_item_end_behavior(playlist_id, position, payload.end_behavior):
+                raise HTTPException(status_code=400, detail='Invalid item or end behavior')
+        if payload.is_music is not None:
+            if not await playlist_store.set_item_music(playlist_id, position, payload.is_music):
+                raise HTTPException(status_code=400, detail='Invalid item')
         await controller.refresh_clips()
         return {'ok': True}
 
@@ -654,6 +679,11 @@ def build_app(
     @app.patch('/api/clips/{deck_id}/loop')
     async def set_loop(deck_id: int, payload: LoopRequest) -> dict[str, Any]:
         await controller.set_loop(deck_id, payload.enabled)
+        return {'ok': True}
+
+    @app.patch('/api/clips/{deck_id}/music')
+    async def set_clip_music(deck_id: int, payload: LoopRequest) -> dict[str, Any]:
+        await controller.set_clip_music(deck_id, payload.enabled)
         return {'ok': True}
 
     @app.patch('/api/clips/{deck_id}/folder')

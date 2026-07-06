@@ -116,6 +116,70 @@ class PlaylistStoreRundownTests(unittest.TestCase):
         self.assertEqual([item['clip_id'] for item in items], [1, 2, 3])
         self.assertEqual(items[0]['end_behavior'], 'loop')
 
+    def test_create_rename_and_get_non_active_playlist(self) -> None:
+        created = asyncio.run(self.playlist_store.create_playlist('Musique matin', [2, 3]))
+
+        self.assertTrue(asyncio.run(self.playlist_store.rename_playlist(created['id'], 'Jingles')))
+        payload = asyncio.run(self.playlist_store.get_playlist(created['id']))
+
+        self.assertEqual(payload['playlist']['name'], 'Jingles')
+        self.assertFalse(payload['playlist']['is_active'])
+        self.assertEqual([item['clip_id'] for item in payload['items']], [2, 3])
+        # The active playlist did not change.
+        self.assertNotEqual(self.active_id(), created['id'])
+
+    def test_rename_rejects_empty_and_duplicate_names(self) -> None:
+        created = asyncio.run(self.playlist_store.create_playlist('Jingles'))
+
+        self.assertFalse(asyncio.run(self.playlist_store.rename_playlist(created['id'], '  ')))
+        self.assertFalse(asyncio.run(self.playlist_store.rename_playlist(created['id'], 'Main Playlist')))
+
+    def test_delete_playlist(self) -> None:
+        created = asyncio.run(self.playlist_store.create_playlist('Jingles', [1]))
+
+        self.assertTrue(asyncio.run(self.playlist_store.delete_playlist(created['id'])))
+        self.assertFalse(asyncio.run(self.playlist_store.delete_playlist(created['id'])))
+        payload = asyncio.run(self.playlist_store.get_playlist(created['id']))
+        self.assertIsNone(payload['playlist'])
+
+    def test_delete_active_playlist_falls_back_to_another(self) -> None:
+        active_id = self.active_id()
+        asyncio.run(self.playlist_store.create_playlist('Jingles', [1]))
+
+        self.assertTrue(asyncio.run(self.playlist_store.delete_playlist(active_id)))
+
+        payload = self.active_playlist()
+        self.assertIsNotNone(payload['playlist'])
+        self.assertNotEqual(payload['playlist']['id'], active_id)
+
+    def test_music_flag_survives_mirror_resync(self) -> None:
+        playlist_id = self.active_id()
+        self.assertTrue(self.playlist_store._set_item_music_sync(playlist_id, 2, True))
+
+        self.playlist_store._sync_active_playlist_from_clips_sync([1, 2, 3])
+
+        items = self.active_playlist()['items']
+        self.assertEqual([item['is_music'] for item in items], [False, True, False])
+
+    def test_export_import_keeps_music_flag(self) -> None:
+        playlist_id = self.active_id()
+        self.playlist_store._set_item_music_sync(playlist_id, 3, True)
+        filenames = {1: 'a.mp4', 2: 'b.mp4', 3: 'c.mp4'}
+
+        exported = self.playlist_store._export_playlists_sync(filenames)
+        self.playlist_store._clear_playlist_sync(playlist_id)
+        self.playlist_store._apply_import_sync(exported, {'a.mp4': 1, 'b.mp4': 2, 'c.mp4': 3})
+
+        items = self.active_playlist()['items']
+        self.assertEqual([item['is_music'] for item in items], [False, False, True])
+
+    def test_clip_level_music_flag_is_inherited_by_items(self) -> None:
+        self.clip_store._set_music_sync(2, True)
+
+        items = self.active_playlist()['items']
+
+        self.assertEqual([item['is_music'] for item in items], [False, True, False])
+
 
 if __name__ == '__main__':
     unittest.main()

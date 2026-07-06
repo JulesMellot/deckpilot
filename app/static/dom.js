@@ -101,6 +101,8 @@ export const DOM = {
   playlistCount: document.getElementById('playlist-count'),
   playlistItems: document.getElementById('playlist-items'),
   btnNewPlaylist: document.getElementById('btn-new-playlist'),
+  btnRenamePlaylist: document.getElementById('btn-rename-playlist'),
+  btnDeletePlaylist: document.getElementById('btn-delete-playlist'),
   btnActivatePlaylist: document.getElementById('btn-activate-playlist'),
   btnPlayPlaylist: document.getElementById('btn-play-playlist'),
   btnPlayPlaylistFrom: document.getElementById('btn-play-playlist-from'),

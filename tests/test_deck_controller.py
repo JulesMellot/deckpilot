@@ -121,5 +121,109 @@ class DeckControllerPreviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.state.transport.paused)
 
 
+class FakeCountdownClip:
+    def __init__(self, deck_id: int, duration: float) -> None:
+        self.deck_id = deck_id
+        self.duration = duration
+
+    def trim_bounds(self) -> tuple[float, float]:
+        return (0.0, self.duration)
+
+
+class FakeCountdownClipStore:
+    def __init__(self, clips: list[FakeCountdownClip]) -> None:
+        self.clips = clips
+
+    async def list_clips(self) -> list[FakeCountdownClip]:
+        return self.clips
+
+
+class FakeCountdownPlaylistStore:
+    def __init__(self, items: list[dict]) -> None:
+        self.items = items
+
+    async def get_active_playlist(self) -> dict:
+        return {'playlist': {'id': 1}, 'items': self.items}
+
+
+class PlaylistCountdownTests(unittest.IsolatedAsyncioTestCase):
+    """The on-air countdown counts the auto-advance chain of videos after the
+    current clip and stops before the first item flagged as music."""
+
+    def make_controller(self, items: list[dict], clips: list[FakeCountdownClip]) -> DeckController:
+        controller = DeckController(
+            config=AppConfig(),
+            state=AppState(AppConfig()),
+            clip_store=FakeCountdownClipStore(clips),
+            playlist_store=FakeCountdownPlaylistStore(items),
+            output_manager=object(),
+            network_info=object(),
+            player=FakePlayer(),
+        )
+        controller._playlist_mode = True
+        return controller
+
+    async def test_countdown_sums_videos_until_music(self) -> None:
+        items = [
+            {'position': 1, 'clip_id': 1, 'end_behavior': 'next', 'is_music': False},
+            {'position': 2, 'clip_id': 2, 'end_behavior': 'next', 'is_music': False},
+            {'position': 3, 'clip_id': 3, 'end_behavior': 'next', 'is_music': True},
+            {'position': 4, 'clip_id': 4, 'end_behavior': 'next', 'is_music': False},
+        ]
+        clips = [FakeCountdownClip(1, 10.0), FakeCountdownClip(2, 20.0), FakeCountdownClip(3, 180.0), FakeCountdownClip(4, 40.0)]
+        controller = self.make_controller(items, clips)
+
+        await controller._refresh_playlist_countdown(1)
+
+        # Playing clip 1 with 5s left: only clip 2 counts, the music stops the chain.
+        self.assertEqual(controller._countdown_for(5.0), 25.0)
+
+    async def test_countdown_is_zero_while_music_plays(self) -> None:
+        items = [
+            {'position': 1, 'clip_id': 1, 'end_behavior': 'next', 'is_music': True},
+            {'position': 2, 'clip_id': 2, 'end_behavior': 'next', 'is_music': False},
+        ]
+        clips = [FakeCountdownClip(1, 180.0), FakeCountdownClip(2, 20.0)]
+        controller = self.make_controller(items, clips)
+
+        await controller._refresh_playlist_countdown(1)
+
+        self.assertEqual(controller._countdown_for(90.0), 0.0)
+
+    async def test_countdown_chain_stops_after_a_stop_item(self) -> None:
+        items = [
+            {'position': 1, 'clip_id': 1, 'end_behavior': 'next', 'is_music': False},
+            {'position': 2, 'clip_id': 2, 'end_behavior': 'stop', 'is_music': False},
+            {'position': 3, 'clip_id': 3, 'end_behavior': 'next', 'is_music': False},
+        ]
+        clips = [FakeCountdownClip(1, 10.0), FakeCountdownClip(2, 20.0), FakeCountdownClip(3, 40.0)]
+        controller = self.make_controller(items, clips)
+
+        await controller._refresh_playlist_countdown(1)
+
+        # Clip 2 plays then stops: clip 3 never airs on its own, so it is not counted.
+        self.assertEqual(controller._countdown_for(5.0), 25.0)
+
+    async def test_countdown_only_covers_current_clip_when_it_does_not_advance(self) -> None:
+        items = [
+            {'position': 1, 'clip_id': 1, 'end_behavior': 'hold', 'is_music': False},
+            {'position': 2, 'clip_id': 2, 'end_behavior': 'next', 'is_music': False},
+        ]
+        clips = [FakeCountdownClip(1, 10.0), FakeCountdownClip(2, 20.0)]
+        controller = self.make_controller(items, clips)
+
+        await controller._refresh_playlist_countdown(1)
+
+        self.assertEqual(controller._countdown_for(5.0), 5.0)
+
+    async def test_countdown_matches_remaining_outside_playlist_mode(self) -> None:
+        controller = self.make_controller([], [])
+        controller._playlist_mode = False
+
+        await controller._refresh_playlist_countdown(1)
+
+        self.assertEqual(controller._countdown_for(7.5), 7.5)
+
+
 if __name__ == '__main__':
     unittest.main()

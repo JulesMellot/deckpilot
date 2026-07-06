@@ -12,6 +12,25 @@ into a new dated section, then `git tag v0.x.y`.
 ## [Unreleased]
 
 ### Added
+- **Multi-playlist management**: the playlist panel now edits whichever playlist is selected
+  in the dropdown — active or not — so rundowns can be prepared ahead of the show without
+  touching what is on air. New RENAME and DELETE buttons alongside NEW/ACTIVATE (deleting the
+  active playlist falls back to another one), and NEW jumps straight into the created playlist
+  so ADD SELECTED lands in it. New API routes: `GET/PATCH/DELETE /api/playlists/{id}`.
+- **Music flag (♪)**: mark a playlist item — or a whole clip from the library, next to the
+  loop toggle — as music. The on-air countdown (`/countdown` overlay and the next-clip bar)
+  then counts only the videos remaining before the first music item: fire a rundown that ends
+  on a music bed and the presenter sees exactly how long until the videos are done, while the
+  music itself shows no countdown. The flag survives library re-syncs and is included in
+  JSON export/import (`is_music` on clips and playlist items, `countdown_seconds` on transport).
+
+### Fixed
+- **Playlists were unusable beyond the default one**: selecting another playlist in the
+  dropdown still displayed (and edited) the active playlist's items, so anything added to a
+  second playlist seemed to vanish. The panel now follows the selection, and every item
+  action (reorder, remove, end behavior) targets the playlist being viewed.
+- A deleted or deactivated active playlist could leave the deck with no active playlist at
+  all (the default-playlist fallback only handled the very first boot).
 - **Countdown overlay** (`/countdown`): a transparent page meant as an OBS browser source over
   the stage return. It shows the running clip's remaining time the whole way through — steady
   white above one minute (`h:mm:ss` for long clips), then blinking orange, red from 30 s,

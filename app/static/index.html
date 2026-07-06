@@ -256,13 +256,15 @@
 
       <!-- Playlist -->
       <div class="sub-panel playlist-panel">
-        <h2>ACTIVE PLAYLIST</h2>
+        <h2>PLAYLIST</h2>
         <div class="playlist-summary">
           <select id="playlist-select" class="select-box compact-select"></select>
           <div class="playlist-count" id="playlist-count">0 items</div>
         </div>
         <div class="playlist-toolbar">
           <button id="btn-new-playlist" class="action-btn">NEW</button>
+          <button id="btn-rename-playlist" class="action-btn">RENAME</button>
+          <button id="btn-delete-playlist" class="action-btn">DELETE</button>
           <button id="btn-activate-playlist" class="action-btn">ACTIVATE</button>
           <button id="btn-play-playlist" class="action-btn">PLAY</button>
           <button id="btn-play-playlist-from" class="action-btn">PLAY HERE</button>
@@ -308,6 +310,9 @@
         <button class="ctrl-btn loop" data-action="loop" title="Loop">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
         </button>
+        <button class="ctrl-btn music" data-action="music" title="Musique : exclu du compte à rebours à l'antenne">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+        </button>
         <button class="ctrl-btn" data-action="rename" title="Rename">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
         </button>
@@ -322,6 +327,7 @@
     <button class="playlist-item">
       <span class="playlist-item-pos">01</span>
       <span class="playlist-item-name">Clip</span>
+      <span class="playlist-item-music" data-role="music" title="Musique : le compte à rebours à l'antenne s'arrête avant cet item">♪</span>
       <span class="playlist-item-end" data-role="end-behavior" title="End behavior: AUTO advances, STOP ends, HOLD freezes the last frame, LOOP repeats">AUTO</span>
       <span class="playlist-item-time">00:00:00</span>
       <span class="playlist-item-move playlist-item-move-up" data-role="move-up" title="Move up">▲</span>

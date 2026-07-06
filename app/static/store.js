@@ -13,6 +13,9 @@ export const state = {
   selectMode: false,
   selection: new Set(),
   selectedPlaylistPosition: 1,
+  // Payload of a non-active playlist being viewed/edited in the panel;
+  // null means the panel mirrors the active playlist from the snapshot.
+  viewedPlaylist: null,
   folders: [],
   playlists: [],
   dialogResolver: null,
@@ -80,9 +83,13 @@ export function pruneNodeCache(cache, validKeys) {
   }
 }
 
+export function viewedPlaylistPayload() {
+  return state.viewedPlaylist || state.snapshot?.playlist || { playlist: null, items: [] };
+}
+
 export function normalizeSelection() {
   const clips = state.snapshot?.clips || [];
-  const playlistItems = state.snapshot?.playlist?.items || [];
+  const playlistItems = viewedPlaylistPayload().items || [];
   if (!clips.length) {
     state.selectedClipId = null;
     state.selectedPlaylistPosition = 1;
@@ -105,7 +112,7 @@ export function getSelectedClip() {
 }
 
 export function playlistItemFromPosition(position) {
-  const items = state.snapshot?.playlist?.items || [];
+  const items = viewedPlaylistPayload().items || [];
   return items.find((item) => String(item.position) === String(position)) || null;
 }
 

@@ -60,6 +60,9 @@ class PlaylistStore:
             item_columns = [row[1] for row in conn.execute('PRAGMA table_info(playlist_items)').fetchall()]
             if 'end_behavior' not in item_columns:
                 conn.execute("ALTER TABLE playlist_items ADD COLUMN end_behavior TEXT NOT NULL DEFAULT 'next'")
+            if 'is_music' not in item_columns:
+                # Music beds don't count toward the on-air countdown.
+                conn.execute("ALTER TABLE playlist_items ADD COLUMN is_music INTEGER NOT NULL DEFAULT 0")
             conn.commit()
 
     async def ensure_default_playlist(self) -> None:
@@ -70,8 +73,14 @@ class PlaylistStore:
             row = conn.execute('SELECT id FROM playlists WHERE is_active = 1').fetchone()
             if row:
                 return
-            conn.execute('UPDATE playlists SET is_active = 0')
-            conn.execute('INSERT OR IGNORE INTO playlists (name, is_active, auto_sync) VALUES (?, 1, 1)', ('Main Playlist',))
+            # Fall back to an existing playlist before creating "Main Playlist":
+            # INSERT OR IGNORE alone would leave no active playlist when the
+            # default already exists but lost its active flag.
+            existing = conn.execute('SELECT id FROM playlists ORDER BY id ASC LIMIT 1').fetchone()
+            if existing:
+                conn.execute('UPDATE playlists SET is_active = 1 WHERE id = ?', (existing['id'],))
+            else:
+                conn.execute('INSERT INTO playlists (name, is_active, auto_sync) VALUES (?, 1, 1)', ('Main Playlist',))
             conn.commit()
 
     async def list_playlists(self) -> List[dict]:
@@ -117,6 +126,37 @@ class PlaylistStore:
             conn.execute('UPDATE playlists SET is_active = 1 WHERE id = ?', (playlist_id,))
             conn.commit()
 
+    async def rename_playlist(self, playlist_id: int, name: str) -> bool:
+        return await asyncio.to_thread(self._rename_playlist_sync, playlist_id, name)
+
+    def _rename_playlist_sync(self, playlist_id: int, name: str) -> bool:
+        clean_name = (name or '').strip()
+        if not clean_name:
+            return False
+        with self._connect() as conn:
+            try:
+                cursor = conn.execute('UPDATE playlists SET name = ? WHERE id = ?', (clean_name, playlist_id))
+            except sqlite3.IntegrityError:
+                return False
+            conn.commit()
+            return cursor.rowcount > 0
+
+    async def delete_playlist(self, playlist_id: int) -> bool:
+        return await asyncio.to_thread(self._delete_playlist_sync, playlist_id)
+
+    def _delete_playlist_sync(self, playlist_id: int) -> bool:
+        with self._connect() as conn:
+            row = conn.execute('SELECT is_active FROM playlists WHERE id = ?', (playlist_id,)).fetchone()
+            if not row:
+                return False
+            # PRAGMA foreign_keys is off by default: delete the items explicitly.
+            conn.execute('DELETE FROM playlist_items WHERE playlist_id = ?', (playlist_id,))
+            conn.execute('DELETE FROM playlists WHERE id = ?', (playlist_id,))
+            conn.commit()
+        if row['is_active']:
+            self._ensure_default_playlist_sync()
+        return True
+
     async def add_clip_to_playlist(self, playlist_id: int, clip_id: int) -> None:
         await asyncio.to_thread(self._add_clip_to_playlist_sync, playlist_id, clip_id)
 
@@ -153,6 +193,22 @@ class PlaylistStore:
             # End behaviors survive mirror re-syncs (matched by clip), so this
             # does not need to break auto-sync.
             conn.execute('UPDATE playlist_items SET end_behavior = ? WHERE id = ?', (behavior, rows[position - 1]['id']))
+            conn.commit()
+        return True
+
+    async def set_item_music(self, playlist_id: int, position: int, is_music: bool) -> bool:
+        return await asyncio.to_thread(self._set_item_music_sync, playlist_id, position, is_music)
+
+    def _set_item_music_sync(self, playlist_id: int, position: int, is_music: bool) -> bool:
+        with self._connect() as conn:
+            rows = conn.execute(
+                'SELECT id FROM playlist_items WHERE playlist_id = ? ORDER BY sort_order ASC, id ASC',
+                (playlist_id,),
+            ).fetchall()
+            if position < 1 or position > len(rows):
+                return False
+            # Like end behaviors, the music flag survives mirror re-syncs.
+            conn.execute('UPDATE playlist_items SET is_music = ? WHERE id = ?', (1 if is_music else 0, rows[position - 1]['id']))
             conn.commit()
         return True
 
@@ -204,23 +260,35 @@ class PlaylistStore:
             conn.commit()
 
     async def get_active_playlist(self) -> dict:
-        raw = await asyncio.to_thread(self._get_active_playlist_rows_sync)
+        raw = await asyncio.to_thread(self._get_playlist_rows_sync, None)
         if raw is None:
             return {'playlist': None, 'items': []}
         playlist, items = raw
         # The clip list comes from the in-memory cache, not a nested event loop.
         clips = await self.clip_store.list_clips()
-        return self._build_active_playlist_payload(playlist, items, clips)
+        return self._build_playlist_payload(playlist, items, clips)
 
-    def _get_active_playlist_rows_sync(self):
+    async def get_playlist(self, playlist_id: int) -> dict:
+        raw = await asyncio.to_thread(self._get_playlist_rows_sync, playlist_id)
+        if raw is None:
+            return {'playlist': None, 'items': []}
+        playlist, items = raw
+        clips = await self.clip_store.list_clips()
+        return self._build_playlist_payload(playlist, items, clips)
+
+    def _get_playlist_rows_sync(self, playlist_id: int | None):
+        """Rows for one playlist; None selects the active playlist."""
         with self._connect() as conn:
-            playlist = conn.execute('SELECT * FROM playlists WHERE is_active = 1 ORDER BY id LIMIT 1').fetchone()
+            if playlist_id is None:
+                playlist = conn.execute('SELECT * FROM playlists WHERE is_active = 1 ORDER BY id LIMIT 1').fetchone()
+            else:
+                playlist = conn.execute('SELECT * FROM playlists WHERE id = ?', (playlist_id,)).fetchone()
             if not playlist:
                 return None
             items = conn.execute('SELECT * FROM playlist_items WHERE playlist_id = ? ORDER BY sort_order ASC, id ASC', (playlist['id'],)).fetchall()
         return playlist, items
 
-    def _build_active_playlist_payload(self, playlist, items, clips) -> dict:
+    def _build_playlist_payload(self, playlist, items, clips) -> dict:
         clip_map = {clip.deck_id: clip for clip in clips}
         payload = []
         for index, row in enumerate(items, start=1):
@@ -236,10 +304,12 @@ class PlaylistStore:
                     loop_enabled=bool(row['loop_enabled']),
                     auto_advance=bool(row['auto_advance']),
                     end_behavior=row['end_behavior'] or 'next',
+                    # A clip flagged as music in the library is music in every rundown.
+                    is_music=bool(row['is_music']) or clip.is_music,
                 ).to_dict()
             )
         return {
-            'playlist': PlaylistSummary(id=playlist['id'], name=playlist['name'], is_active=True, item_count=len(payload)).to_dict(),
+            'playlist': PlaylistSummary(id=playlist['id'], name=playlist['name'], is_active=bool(playlist['is_active']), item_count=len(payload)).to_dict(),
             'items': payload,
         }
 
@@ -272,7 +342,7 @@ class PlaylistStore:
                     conn.commit()
                 return
             existing = conn.execute(
-                'SELECT clip_id, loop_enabled, auto_advance, end_behavior FROM playlist_items WHERE playlist_id = ? ORDER BY sort_order ASC, id ASC',
+                'SELECT clip_id, loop_enabled, auto_advance, end_behavior, is_music FROM playlist_items WHERE playlist_id = ? ORDER BY sort_order ASC, id ASC',
                 (playlist_id,),
             ).fetchall()
             existing_ids = [row['clip_id'] for row in existing]
@@ -284,13 +354,13 @@ class PlaylistStore:
     def _rewrite_items(self, conn: sqlite3.Connection, playlist_id: int, clip_ids: list[int], existing_rows) -> None:
         flags = {}
         for row in existing_rows:
-            flags.setdefault(row['clip_id'], (row['loop_enabled'], row['auto_advance'], row['end_behavior'] or 'next'))
+            flags.setdefault(row['clip_id'], (row['loop_enabled'], row['auto_advance'], row['end_behavior'] or 'next', row['is_music']))
         conn.execute('DELETE FROM playlist_items WHERE playlist_id = ?', (playlist_id,))
         for sort_order, clip_id in enumerate(clip_ids, start=1):
-            loop_enabled, auto_advance, end_behavior = flags.get(clip_id, (0, 0, 'next'))
+            loop_enabled, auto_advance, end_behavior, is_music = flags.get(clip_id, (0, 0, 'next', 0))
             conn.execute(
-                'INSERT INTO playlist_items (playlist_id, sort_order, clip_id, loop_enabled, auto_advance, end_behavior) VALUES (?, ?, ?, ?, ?, ?)',
-                (playlist_id, sort_order, clip_id, loop_enabled, auto_advance, end_behavior),
+                'INSERT INTO playlist_items (playlist_id, sort_order, clip_id, loop_enabled, auto_advance, end_behavior, is_music) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                (playlist_id, sort_order, clip_id, loop_enabled, auto_advance, end_behavior, is_music),
             )
 
     async def reorder_active_playlist(self, clip_ids: list[int]) -> None:
@@ -303,7 +373,7 @@ class PlaylistStore:
                 return
             playlist_id = playlist['id']
             existing = conn.execute(
-                'SELECT clip_id, loop_enabled, auto_advance, end_behavior FROM playlist_items WHERE playlist_id = ? ORDER BY sort_order ASC, id ASC',
+                'SELECT clip_id, loop_enabled, auto_advance, end_behavior, is_music FROM playlist_items WHERE playlist_id = ? ORDER BY sort_order ASC, id ASC',
                 (playlist_id,),
             ).fetchall()
             self._rewrite_items(conn, playlist_id, clip_ids, existing)
@@ -330,6 +400,7 @@ class PlaylistStore:
                             'filename': clip_filenames.get(row['clip_id']),
                             'loop_enabled': bool(row['loop_enabled']),
                             'end_behavior': row['end_behavior'] or 'next',
+                            'is_music': bool(row['is_music']),
                         }
                         for row in items
                         if clip_filenames.get(row['clip_id'])
@@ -367,8 +438,8 @@ class PlaylistStore:
                     sort_order += 1
                     behavior = item.get('end_behavior') if item.get('end_behavior') in END_BEHAVIORS else 'next'
                     conn.execute(
-                        'INSERT INTO playlist_items (playlist_id, sort_order, clip_id, loop_enabled, auto_advance, end_behavior) VALUES (?, ?, ?, ?, 0, ?)',
-                        (playlist_id, sort_order, clip_id, 1 if item.get('loop_enabled') else 0, behavior),
+                        'INSERT INTO playlist_items (playlist_id, sort_order, clip_id, loop_enabled, auto_advance, end_behavior, is_music) VALUES (?, ?, ?, ?, 0, ?, ?)',
+                        (playlist_id, sort_order, clip_id, 1 if item.get('loop_enabled') else 0, behavior, 1 if item.get('is_music') else 0),
                     )
                 if entry.get('is_active'):
                     conn.execute('UPDATE playlists SET is_active = 0')

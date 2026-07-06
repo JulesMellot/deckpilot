@@ -37,7 +37,9 @@
   let remaining = 0, receivedAt = 0, playing = false, rate = 1, loaded = false, loop = false;
 
   function applyTransport(t) {
-    remaining = Number(t.remaining_seconds) || 0;
+    // countdown_seconds intègre les items de playlist qui suivent, en
+    // s'arrêtant avant le premier item marqué "musique".
+    remaining = Number(t.countdown_seconds != null ? t.countdown_seconds : t.remaining_seconds) || 0;
     receivedAt = performance.now();
     playing = t.status === 'play' && !t.paused;
     rate = (Number(t.playback_speed_percent) || 100) / 100;

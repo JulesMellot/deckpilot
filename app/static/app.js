@@ -12,6 +12,7 @@ import {
   pruneNodeCache,
   reindexClips,
   state,
+  viewedPlaylistPayload,
 } from './store.js';
 import {
   closeAppDialog,
@@ -137,7 +138,7 @@ document.addEventListener('keydown', (e) => {
 
 function renderPlaybackCollections() {
   normalizeSelection();
-  renderPlaylist(state.snapshot?.playlist || { playlist: null, items: [] }, state.snapshot?.transport?.clip_id);
+  renderPlaylist(viewedPlaylistPayload(), state.snapshot?.transport?.clip_id);
   renderMediaGrid(filteredClips(), state.snapshot?.transport?.clip_id, state.snapshot?.transport?.status);
   renderPads();
 }

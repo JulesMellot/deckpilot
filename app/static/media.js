@@ -256,6 +256,7 @@ export function updateMediaNode(node, clip, activeClipId, status) {
   }
 
   loopButton.classList.toggle('active-loop', Boolean(clip.loop_enabled));
+  node.querySelector('.ctrl-btn.music').classList.toggle('active-music', Boolean(clip.is_music));
   node.classList.toggle('active', clip.deck_id === activeClipId);
   node.classList.toggle('selected', clip.deck_id === state.selectedClipId);
   node.classList.toggle('multi-selected', state.selection.has(clip.filename));
@@ -452,6 +453,8 @@ export async function handleClipAction(clip, action) {
     return;
   } else if (action === 'loop') {
     await api(`/api/clips/${clip.deck_id}/loop`, { method: 'PATCH', body: JSON.stringify({ enabled: !clip.loop_enabled }) });
+  } else if (action === 'music') {
+    await api(`/api/clips/${clip.deck_id}/music`, { method: 'PATCH', body: JSON.stringify({ enabled: !clip.is_music }) });
   } else if (action === 'rename') {
     const name = await requestText({
       title: 'Rename Clip',

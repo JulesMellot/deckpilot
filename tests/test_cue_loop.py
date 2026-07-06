@@ -19,6 +19,7 @@ class FakeClip:
     media_kind: str = 'video'
     is_vertical: bool = False
     loop_enabled: bool = False
+    is_music: bool = False
     mark_in_seconds: float = 0.0
     mark_out_seconds: float = 0.0
 

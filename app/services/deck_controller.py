@@ -1028,6 +1028,11 @@ class DeckController:
         any item that ends the chain (stop/hold/loop)."""
         self._countdown_extra_seconds = 0.0
         self._countdown_in_music = False
+        clip = await self.clip_store.get_clip(clip_id)
+        if clip and clip.is_music:
+            # Clip-level music flag mutes the countdown even outside playlist mode.
+            self._countdown_in_music = True
+            return
         if not self._playlist_mode:
             return
         playlist = await self.playlist_store.get_active_playlist()

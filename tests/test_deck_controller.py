@@ -122,9 +122,10 @@ class DeckControllerPreviewTests(unittest.IsolatedAsyncioTestCase):
 
 
 class FakeCountdownClip:
-    def __init__(self, deck_id: int, duration: float) -> None:
+    def __init__(self, deck_id: int, duration: float, is_music: bool = False) -> None:
         self.deck_id = deck_id
         self.duration = duration
+        self.is_music = is_music
 
     def trim_bounds(self) -> tuple[float, float]:
         return (0.0, self.duration)
@@ -136,6 +137,9 @@ class FakeCountdownClipStore:
 
     async def list_clips(self) -> list[FakeCountdownClip]:
         return self.clips
+
+    async def get_clip(self, deck_id: int) -> FakeCountdownClip | None:
+        return next((clip for clip in self.clips if clip.deck_id == deck_id), None)
 
 
 class FakeCountdownPlaylistStore:
@@ -189,6 +193,18 @@ class PlaylistCountdownTests(unittest.IsolatedAsyncioTestCase):
         await controller._refresh_playlist_countdown(1)
 
         self.assertEqual(controller._countdown_for(90.0), 0.0)
+
+    async def test_countdown_is_zero_for_music_clip_outside_playlist_mode(self) -> None:
+        clips = [FakeCountdownClip(1, 180.0, is_music=True), FakeCountdownClip(2, 20.0)]
+        controller = self.make_controller([], clips)
+        controller._playlist_mode = False
+
+        await controller._refresh_playlist_countdown(1)
+
+        self.assertEqual(controller._countdown_for(90.0), 0.0)
+        # A non-music clip still gets its countdown.
+        await controller._refresh_playlist_countdown(2)
+        self.assertEqual(controller._countdown_for(15.0), 15.0)
 
     async def test_countdown_chain_stops_after_a_stop_item(self) -> None:
         items = [

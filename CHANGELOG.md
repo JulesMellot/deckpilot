@@ -25,6 +25,9 @@ into a new dated section, then `git tag v0.x.y`.
   JSON export/import (`is_music` on clips and playlist items, `countdown_seconds` on transport).
 
 ### Fixed
+- **Music flag ignored outside playlist mode**: a clip flagged ♪ in the library and played
+  directly (not through the active playlist) still fed the `/countdown` overlay. The clip-level
+  flag now mutes the countdown wherever the clip is launched from.
 - **Playlists were unusable beyond the default one**: selecting another playlist in the
   dropdown still displayed (and edited) the active playlist's items, so anything added to a
   second playlist seemed to vanish. The panel now follows the selection, and every item

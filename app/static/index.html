@@ -28,7 +28,7 @@
           <button id="btn-toggle-logs" class="action-btn">LOGS ON</button>
           <button id="btn-open-settings" class="action-btn">SETTINGS</button>
         </div>
-        <div class="network-target" id="network-target">
+        <div class="network-target" id="network-target" role="button" tabindex="0" title="Show connection addresses">
           <span class="network-label">ATEM</span>
           <span class="network-value" id="network-value">Detecting...</span>
         </div>
@@ -393,6 +393,25 @@
       <div class="app-dialog-actions">
         <button id="btn-app-dialog-cancel" class="action-btn">CANCEL</button>
         <button id="btn-app-dialog-confirm" class="action-btn active">CONFIRM</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="preview-modal" id="connections-modal" hidden>
+    <div class="preview-dialog connections-dialog">
+      <div class="preview-dialog-header">
+        <div>
+          <div class="preview-title">Connections</div>
+          <div class="preview-subtitle">Addresses for the ATEM, OBS overlays, and browsers.</div>
+        </div>
+        <button id="btn-connections-close" class="action-btn">CLOSE</button>
+      </div>
+      <div class="connections-list">
+        <div class="connections-row"><span class="connections-label">ATEM / HYPERDECK</span><span class="connections-value" id="conn-hyperdeck">--</span></div>
+        <div class="connections-row"><span class="connections-label">WEB UI</span><span class="connections-value" id="conn-web">--</span></div>
+        <div class="connections-row"><span class="connections-label">COUNTDOWN (OBS)</span><span class="connections-value" id="conn-countdown">--</span></div>
+        <div class="connections-row"><span class="connections-label">HOSTNAME</span><span class="connections-value" id="conn-hostname">--</span></div>
+        <div class="connections-row"><span class="connections-label">ALL IPS</span><span class="connections-value" id="conn-ips">--</span></div>
       </div>
     </div>
   </div>

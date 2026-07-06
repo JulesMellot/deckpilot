@@ -127,6 +127,50 @@ header { grid-area: header; }
   border: 1px solid var(--border-dim);
   border-radius: 4px;
   background: var(--bg-element);
+  cursor: pointer;
+}
+
+.network-target:hover {
+  border-color: var(--border-bright);
+}
+
+.connections-dialog {
+  width: min(560px, 100%);
+}
+
+.connections-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.connections-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
+  padding: 0.55rem 0.2rem;
+  border-bottom: 1px solid var(--border-dim);
+}
+
+.connections-row:last-child {
+  border-bottom: none;
+}
+
+.connections-label {
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  font-weight: 700;
+  letter-spacing: 1px;
+  white-space: nowrap;
+}
+
+.connections-value {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: var(--text-main);
+  user-select: all;
+  text-align: right;
+  word-break: break-all;
 }
 
 .network-label {

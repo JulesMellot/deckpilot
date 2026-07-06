@@ -19,12 +19,28 @@ export function renderConnectionStatus(connections) {
 }
 
 export function renderNetwork(network) {
-  if (network?.hyperdeck_target) {
-    DOM.networkValue.textContent = network.hyperdeck_target;
-  } else {
-    DOM.networkValue.textContent = `${location.hostname}:9993`;
-  }
+  const hyperdeckTarget = network?.hyperdeck_target || `${location.hostname}:9993`;
+  const httpUrl = network?.http_url || location.origin;
+  DOM.networkValue.textContent = hyperdeckTarget;
+  DOM.connHyperdeck.textContent = hyperdeckTarget;
+  DOM.connWeb.textContent = httpUrl;
+  DOM.connCountdown.textContent = `${httpUrl}/countdown`;
+  DOM.connHostname.textContent = network?.hostname || '--';
+  DOM.connIps.textContent = (network?.ips || []).join('  ') || '--';
 }
+
+DOM.networkTarget.addEventListener('click', () => {
+  DOM.connectionsModal.hidden = false;
+});
+DOM.networkTarget.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' || event.key === ' ') DOM.connectionsModal.hidden = false;
+});
+DOM.btnConnectionsClose.addEventListener('click', () => {
+  DOM.connectionsModal.hidden = true;
+});
+DOM.connectionsModal.addEventListener('click', (event) => {
+  if (event.target === DOM.connectionsModal) DOM.connectionsModal.hidden = true;
+});
 
 export function renderLogs(logs) {
   if (!state.logsVisible) return;

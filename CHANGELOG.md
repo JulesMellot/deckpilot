@@ -16,6 +16,9 @@ into a new dated section, then `git tag v0.x.y`.
   the stage return. It shows the running clip's remaining time during its last minute — blinking
   orange, red from 30 s, fast-blinking red from 10 s — fed by the existing `/ws` transport events
   and interpolated client-side between ticks.
+- **Connections modal**: the ATEM target chip in the header now opens a dialog listing every
+  address to point gear at — HyperDeck target for the ATEM, web UI URL, countdown overlay URL
+  for OBS, hostname, and all detected IPs (values are one-click selectable for copying).
 
 ### Changed
 - **Web UI**: the ~2,900-line `app.js` monolith is now eleven native ES modules (`store`, `util`,

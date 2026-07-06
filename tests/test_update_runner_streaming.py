@@ -1,36 +1,43 @@
+from __future__ import annotations
+
 import json
 import os
 import sys
+import tempfile
+import unittest
 from pathlib import Path
-
-import pytest
 
 from app.services.update_runner import run_streaming
 
 
-def _read_status(path: Path) -> dict:
-    return json.loads(path.read_text(encoding='utf-8'))
+class RunStreamingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self._tmp.name)
+        self.status = self.tmp_path / 'status.json'
+        self.addCleanup(self._tmp.cleanup)
+
+    def _read_status(self) -> dict:
+        return json.loads(self.status.read_text(encoding='utf-8'))
+
+    def test_mirrors_output_into_status(self) -> None:
+        # Print a line, linger long enough for the 1 s poll loop to see it.
+        script = "import sys,time; print('Collecting example-package'); sys.stdout.flush(); time.sleep(1.6)"
+        run_streaming([sys.executable, '-c', script], self.tmp_path, dict(os.environ), self.status, timeout=30)
+        self.assertEqual(self._read_status()['detail'], 'Collecting example-package')
+
+    def test_raises_with_output_tail_on_failure(self) -> None:
+        script = "import sys; print('resolving deps'); print('ERROR: no matching distribution'); sys.exit(1)"
+        with self.assertRaises(RuntimeError) as ctx:
+            run_streaming([sys.executable, '-c', script], self.tmp_path, dict(os.environ), self.status, timeout=30)
+        self.assertIn('no matching distribution', str(ctx.exception))
+
+    def test_kills_silent_hang(self) -> None:
+        script = "import time; time.sleep(30)"
+        with self.assertRaises(RuntimeError) as ctx:
+            run_streaming([sys.executable, '-c', script], self.tmp_path, dict(os.environ), self.status, timeout=1)
+        self.assertIn('timed out', str(ctx.exception))
 
 
-def test_run_streaming_mirrors_output_into_status(tmp_path):
-    status = tmp_path / 'status.json'
-    # Print a line, linger long enough for the 1 s poll loop to see it.
-    script = "import sys,time; print('Collecting example-package'); sys.stdout.flush(); time.sleep(1.6)"
-    run_streaming([sys.executable, '-c', script], tmp_path, dict(os.environ), status, timeout=30)
-    assert _read_status(status)['detail'] == 'Collecting example-package'
-
-
-def test_run_streaming_raises_with_output_tail_on_failure(tmp_path):
-    status = tmp_path / 'status.json'
-    script = "import sys; print('resolving deps'); print('ERROR: no matching distribution'); sys.exit(1)"
-    with pytest.raises(RuntimeError) as excinfo:
-        run_streaming([sys.executable, '-c', script], tmp_path, dict(os.environ), status, timeout=30)
-    assert 'no matching distribution' in str(excinfo.value)
-
-
-def test_run_streaming_kills_silent_hang(tmp_path):
-    status = tmp_path / 'status.json'
-    script = "import time; time.sleep(30)"
-    with pytest.raises(RuntimeError) as excinfo:
-        run_streaming([sys.executable, '-c', script], tmp_path, dict(os.environ), status, timeout=1)
-    assert 'timed out' in str(excinfo.value)
+if __name__ == '__main__':
+    unittest.main()

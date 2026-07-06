@@ -256,7 +256,8 @@ export function renderUpdateStatus(update) {
   let statusText;
   if (busy) {
     statusClass += ' is-busy';
-    statusText = `Updating… ${update.message || ''}`;
+    const step = update.step ? `[${update.step}/${update.steps_total || 4}] ` : '';
+    statusText = `Updating… ${step}${update.message || ''}`;
   } else if (update.error) {
     statusClass += ' is-error';
     statusText = `Update failed: ${update.error}`;
@@ -288,9 +289,19 @@ export function renderUpdateStatus(update) {
     DOM.updateChangelogList.replaceChildren(fragment);
   }
 
-  const lines = [
+  const lines = [];
+  if (busy) {
+    // Show life while the slow steps run: the tool's own last output line
+    // (pip, mostly) and how long the update has been going.
+    if (update.detail) lines.push(update.detail);
+    if (update.started_at) {
+      const elapsed = Math.max(0, Math.round(Date.now() / 1000 - update.started_at));
+      lines.push(`Elapsed: ${Math.floor(elapsed / 60)}m ${String(elapsed % 60).padStart(2, '0')}s`);
+    }
+  }
+  lines.push(
     `Platform: ${(update.platform || 'unknown').toUpperCase()} | Install: ${(update.install_mode || 'manual').toUpperCase()} | Branch: ${update.branch || 'unknown'}`,
-  ];
+  );
   if (update.restart_target === 'raspberry_pi') {
     lines.push('This update will reboot the Raspberry Pi.');
   } else if (update.restart_target === 'deckpilot') {

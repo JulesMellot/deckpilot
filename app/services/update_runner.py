@@ -8,6 +8,7 @@ import signal
 import subprocess
 import shutil
 import sys
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -70,8 +71,58 @@ def pip_command(repo_root: Path, python_executable: str) -> list[str]:
     else:
         pip_path = repo_root / '.venv' / 'bin' / 'pip'
     if pip_path.exists():
-        return [str(pip_path), 'install', '-r', str(repo_root / 'requirements.txt')]
-    return [python_executable, '-m', 'pip', 'install', '-r', str(repo_root / 'requirements.txt')]
+        base = [str(pip_path)]
+    else:
+        base = [python_executable, '-m', 'pip']
+    # --no-input: pip must never sit waiting for an invisible prompt (keyring,
+    # index auth) — that reads as "the updater is stuck" to the operator.
+    # Fewer retries: on a dead venue network, pip's default 5 retries with
+    # backoff stall for minutes before surfacing the real error.
+    return [*base, 'install', '--no-input', '--retries', '2', '--progress-bar', 'off',
+            '-r', str(repo_root / 'requirements.txt')]
+
+
+def run_streaming(command: list[str], cwd: Path, env: dict[str, str], status_path: Path, timeout: int = 900) -> None:
+    """Run a slow command with its latest output line mirrored into the status
+    file, so the UI shows life instead of a frozen message. Kills the process
+    when the total budget is exhausted — even if it went silent."""
+    process = subprocess.Popen(
+        command,
+        cwd=str(cwd),
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    lines: list[str] = []
+
+    def _drain() -> None:
+        assert process.stdout is not None
+        for raw in process.stdout:
+            stripped = raw.strip()
+            if stripped:
+                lines.append(stripped)
+
+    reader = threading.Thread(target=_drain, daemon=True)
+    reader.start()
+
+    deadline = time.time() + timeout
+    shown: str | None = None
+    while process.poll() is None:
+        if time.time() > deadline:
+            process.kill()
+            reader.join(timeout=5)
+            raise RuntimeError(f'{command[0]} timed out after {timeout // 60} minutes: '
+                               f'{lines[-1] if lines else "no output"}')
+        latest = lines[-1] if lines else None
+        if latest and latest != shown:
+            shown = latest
+            write_status(status_path, detail=latest[:200])
+        time.sleep(1.0)
+    reader.join(timeout=5)
+    if process.returncode != 0:
+        raise RuntimeError('\n'.join(lines[-15:]) or f'Command failed: {" ".join(command)}')
 
 
 def terminate_process(pid: int) -> None:
@@ -166,7 +217,8 @@ def main() -> None:
         if not (repo_root / 'requirements.txt').exists():
             raise RuntimeError('requirements.txt is missing from this installation.')
 
-        write_status(status_path, phase='running', message='Pulling the latest DeckPilot version...')
+        write_status(status_path, phase='running', step=1, steps_total=4, detail=None,
+                     message='Pulling the latest DeckPilot version...')
         previous_commit = run_command(['git', 'rev-parse', '--short', 'HEAD'], repo_root, env, timeout=15)
         previous_commit_full = run_command(['git', 'rev-parse', 'HEAD'], repo_root, env, timeout=15)
         branch = run_command(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], repo_root, env, timeout=15)
@@ -181,20 +233,42 @@ def main() -> None:
 
         pull_output = run_command(['git', 'pull', '--ff-only'], repo_root, env, timeout=300)
 
-        write_status(
-            status_path,
-            phase='running',
-            message='Installing updated Python dependencies...',
-            branch=branch,
-            previous_commit=previous_commit,
-            remote_commit=remote_commit,
-        )
-        run_command(pip_command(repo_root, args.python_executable), repo_root, env, timeout=900)
         current_commit = run_command(['git', 'rev-parse', '--short', 'HEAD'], repo_root, env, timeout=15)
         current_commit_full = run_command(['git', 'rev-parse', 'HEAD'], repo_root, env, timeout=15)
+        changed_files = changed_files_between(repo_root, previous_commit_full, current_commit_full)
+
+        # The pip pass is the slowest, most fragile step of the whole update
+        # (minutes on a Pi 3, worse on venue Wi-Fi) — only pay for it when the
+        # pulled commits actually touched requirements.txt.
+        if 'requirements.txt' in changed_files:
+            write_status(
+                status_path,
+                phase='running',
+                step=2,
+                detail=None,
+                message='Installing updated Python dependencies...',
+                branch=branch,
+                previous_commit=previous_commit,
+                remote_commit=remote_commit,
+            )
+            # pip's version self-check is one more PyPI round-trip that can
+            # stall on a captive/venue network; it has no business in an update.
+            pip_env = dict(env, PIP_DISABLE_PIP_VERSION_CHECK='1')
+            run_streaming(pip_command(repo_root, args.python_executable), repo_root, pip_env, status_path, timeout=900)
+        else:
+            write_status(
+                status_path,
+                phase='running',
+                step=2,
+                detail=None,
+                message='Python dependencies unchanged — skipping reinstall.',
+                branch=branch,
+                previous_commit=previous_commit,
+                remote_commit=remote_commit,
+            )
 
         update_plan = build_update_plan(
-            changed_files_between(repo_root, previous_commit_full, current_commit_full),
+            changed_files,
             platform_name=platform.system().lower(),
             install_mode='systemd' if args.service_name else 'manual',
             automatic_reboot_available=automatic_reboot_available(args.service_name),
@@ -205,6 +279,8 @@ def main() -> None:
             write_status(
                 status_path,
                 phase='success',
+                step=4,
+                detail=None,
                 message='DeckPilot is already up to date.',
                 finished_at=time.time(),
                 current_commit=current_commit,
@@ -217,6 +293,8 @@ def main() -> None:
             write_status(
                 status_path,
                 phase='rebooting',
+                step=3,
+                detail=None,
                 message='Rebooting the Raspberry Pi to apply the update...',
                 current_commit=current_commit,
                 current_commit_full=current_commit_full,
@@ -239,6 +317,8 @@ def main() -> None:
         write_status(
             status_path,
             phase='restarting',
+            step=3,
+            detail=None,
             message=restart_message,
             current_commit=current_commit,
             current_commit_full=current_commit_full,
@@ -270,6 +350,8 @@ def main() -> None:
         write_status(
             status_path,
             phase='success',
+            step=4,
+            detail=None,
             message=success_message,
             finished_at=time.time(),
             current_commit=current_commit,

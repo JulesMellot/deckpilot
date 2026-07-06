@@ -168,6 +168,21 @@ class UpdateManager:
                 self._write_status_sync(saved)
         elif phase in {'running', 'restarting', 'rebooting'} and not runner_active and saved.get('finished_at'):
             phase = str(saved.get('phase'))
+        elif phase == 'running' and runner_pid and not runner_active and not saved.get('finished_at'):
+            # The runner died mid-update (OOM on a 1 GB Pi during pip, crash)
+            # without writing a final status. Without this, the UI shows
+            # "Updating…" forever and the operator can never retry.
+            last_step = saved.get('message')
+            phase = 'error'
+            saved['phase'] = 'error'
+            saved['message'] = 'Automatic update failed.'
+            saved['error'] = saved.get('error') or (
+                'The updater process stopped unexpectedly'
+                + (f' during: {last_step}' if last_step else '')
+                + '. Try again.'
+            )
+            saved['finished_at'] = time.time()
+            self._write_status_sync(saved)
 
         reason = None
         if not git_available:
@@ -180,6 +195,9 @@ class UpdateManager:
         return {
             'phase': phase,
             'message': saved.get('message') or self._default_message(update_available),
+            'detail': saved.get('detail'),
+            'step': saved.get('step'),
+            'steps_total': saved.get('steps_total'),
             'started_at': saved.get('started_at'),
             'finished_at': saved.get('finished_at'),
             'error': saved.get('error'),

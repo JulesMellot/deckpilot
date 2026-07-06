@@ -28,6 +28,17 @@ into a new dated section, then `git tag v0.x.y`.
   (the in-app updater says so when it applies this change).
 
 ### Changed
+- **Updater**: no more silent minutes stuck on "Installing updated Python dependencies".
+  The pip pass is now skipped entirely unless the pulled commits touched `requirements.txt`
+  (the common case updates in seconds); when it does run, its output streams live into the
+  status line with a step counter (`[2/4]`) and elapsed time in the UI. pip runs with
+  `--no-input`, fewer retries and no PyPI self-check so a captive venue network fails fast
+  instead of hanging, and a hard 15-minute kill covers a fully silent stall.
+
+### Fixed
+- **Updater**: a runner process that died mid-update (OOM during pip on a 1 GB Pi, crash)
+  left the UI saying "Updating…" forever with no way to retry. A dead runner with no final
+  status is now detected and surfaced as a failed update with the step it died on.
 - **Web UI**: the ~2,900-line `app.js` monolith is now eleven native ES modules (`store`, `util`,
   `dom`, `dialogs`, and one per panel: `media`, `preview`, `playlist`, `transport`, `settings`,
   `health`), split one file per commit with the deck working at every step — still no framework,

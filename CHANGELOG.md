@@ -30,6 +30,9 @@ into a new dated section, then `git tag v0.x.y`.
   showing the real transport state.
 
 ### Fixed
+- After a successful web update, the operator UI reloads itself (1.5 s after the
+  "success" status) so the browser serves the freshly pulled frontend modules instead
+  of the pre-update ones.
 - **Web update left the deck offline** (stuck at step 1/4, then unreachable): on SIGTERM,
   uvicorn's graceful shutdown waited forever on the UI's always-open websockets — the old
   process never exited, so systemd never restarted the service and the updater reported

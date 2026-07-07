@@ -342,6 +342,13 @@ export function startUpdatePolling() {
       const busy = ['running', 'restarting', 'rebooting'].includes(update.phase);
       if (!busy) {
         stopUpdatePolling();
+        if (update.phase === 'success') {
+          // Reload so the browser revalidates the UI modules and serves the
+          // freshly pulled frontend instead of the pre-update one.
+          DOM.updateMeta.textContent = 'Update complete — reloading the interface…';
+          window.setTimeout(() => window.location.reload(), 1500);
+          return;
+        }
         await refresh({ includeUpdate: false });
         return;
       }

@@ -216,12 +216,14 @@ class FakePlayer:
         self.standby_calls.append(path)
         return True
 
-    async def cue_file(self, path: str, loop: bool = False, is_vertical: bool = False, start: float = 0.0, codec: str | None = None) -> bool:
+    async def cue_file(self, path: str, loop: bool = False, is_vertical: bool = False, start: float = 0.0, codec: str | None = None,
+                       remote_max_height: int | None = None) -> bool:
         self.cue_calls.append((path, loop))
         self.cue_starts.append(start)
         return True
 
-    async def play_file(self, path: str, loop: bool = False, is_vertical: bool = False, start: float = 0.0, codec: str | None = None) -> bool:
+    async def play_file(self, path: str, loop: bool = False, is_vertical: bool = False, start: float = 0.0, codec: str | None = None,
+                        remote_max_height: int | None = None) -> bool:
         self.play_calls.append((path, loop))
         self.play_starts.append(start)
         return True

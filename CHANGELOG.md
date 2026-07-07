@@ -37,6 +37,11 @@ into a new dated section, then `git tag v0.x.y`.
   never downloaded (recording a live until the timeout would fill the disk) — it stays a
   streaming link with its real title, resolved at fire time by mpv's ytdl hook. The hook is
   pointed at the venv's fresh yt-dlp instead of the stale Debian one, capped at 1080p H.264.
+- **Per-link resolution cap**: the ADD LINK dialog now asks for a quality — Auto
+  (recommended), 1080p, 720p or 480p. The cap drives both live playback (mpv's per-load
+  ytdl format) and VOD downloads. Auto keeps the safe behavior (1080p ≤30 fps, else ≤720p);
+  an explicit 1080p may select a 60 fps variant, beyond the Pi 3's decoder rating — the
+  operator's call.
 - **Music items look off-air to the ATEM**: while a music-flagged clip plays, the HyperDeck
   protocol reports `status: stopped` (speed 0) instead of `play`, so Companion triggers keyed
   on the play→stop transition fire before the music starts and stay put until real video

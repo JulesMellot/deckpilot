@@ -42,6 +42,10 @@ class ClipRecord:
     # file on disk. Remote clips have no /media preview and are never swept by
     # the disk sync.
     is_remote: bool = False
+    # Operator-chosen resolution cap for a network link (0 = automatic). Drives
+    # the ytdl format at fire time and the download quality; picking 1080 may
+    # land on a 60 fps variant, beyond the Pi 3's decoder rating — their call.
+    remote_max_height: int = 0
 
     def trim_bounds(self) -> tuple[float, float]:
         """Return the effective (in, out) playback window in absolute seconds.

@@ -222,6 +222,9 @@ class ClipStore:
             if 'is_music' not in columns:
                 # Music clips never count toward the on-air countdown.
                 conn.execute("ALTER TABLE clips ADD COLUMN is_music INTEGER NOT NULL DEFAULT 0")
+            if 'remote_max_height' not in columns:
+                # Operator-chosen resolution cap for network links (0 = auto).
+                conn.execute("ALTER TABLE clips ADD COLUMN remote_max_height INTEGER NOT NULL DEFAULT 0")
             conn.execute("INSERT OR IGNORE INTO media_folders (name) VALUES ('Library')")
             conn.execute("INSERT OR IGNORE INTO media_folders (name) VALUES ('System')")
             conn.commit()
@@ -922,7 +925,7 @@ class ClipStore:
                 SELECT id, sort_order, name, folder, filename, filepath, duration_seconds,
                        duration_timecode, framerate, codec, width, height, media_kind,
                        is_vertical, thumbnail_path, processing_state, error_reason, loop_enabled, is_music, is_builtin, is_remote,
-                       mark_in_seconds, mark_out_seconds, tags,
+                       remote_max_height, mark_in_seconds, mark_out_seconds, tags,
                        (CASE WHEN audio_levels IS NOT NULL AND LENGTH(audio_levels) > 2 THEN 1 ELSE 0 END) AS has_audio_levels
                 FROM clips ORDER BY sort_order ASC, id ASC
                 '''
@@ -962,6 +965,7 @@ class ClipStore:
                     source=source,
                     available=available,
                     is_remote=is_remote,
+                    remote_max_height=int(row['remote_max_height'] or 0),
                 )
             )
         return clips
@@ -974,7 +978,8 @@ class ClipStore:
             row = conn.execute('SELECT filepath FROM clips WHERE filename = ? AND is_remote = 0', (filename,)).fetchone()
         return row['filepath'] if row else None
 
-    async def add_remote_clip(self, url: str, name: str | None = None, destination: str | None = None) -> str:
+    async def add_remote_clip(self, url: str, name: str | None = None, destination: str | None = None,
+                              max_height: int | None = None) -> str:
         """Add a network link (http/rtsp/...) as a playable clip.
 
         Inserts immediately so the operator sees it, then probes the URL in the
@@ -985,15 +990,19 @@ class ClipStore:
         """
         if destination and destination not in removable_media_roots():
             raise ValueError('That destination drive is not connected.')
-        key, clean_url = await asyncio.to_thread(self._insert_remote_clip_sync, url, name)
+        max_height = int(max_height or 0)
+        if max_height not in (0, 480, 720, 1080):
+            raise ValueError('Resolution cap must be 480, 720 or 1080 (or empty for automatic).')
+        key, clean_url = await asyncio.to_thread(self._insert_remote_clip_sync, url, name, max_height)
         task = asyncio.create_task(
-            self._enrich_remote_clip(key, clean_url, destination=destination, named=bool((name or '').strip()))
+            self._enrich_remote_clip(key, clean_url, destination=destination, named=bool((name or '').strip()),
+                                     max_height=max_height)
         )
         self._remote_enrichment_tasks.add(task)
         task.add_done_callback(self._remote_enrichment_tasks.discard)
         return key
 
-    def _insert_remote_clip_sync(self, url: str, name: str | None) -> tuple[str, str]:
+    def _insert_remote_clip_sync(self, url: str, name: str | None, max_height: int = 0) -> tuple[str, str]:
         clean = (url or '').strip()
         parsed = urlparse(clean)
         if parsed.scheme.lower() not in REMOTE_URL_SCHEMES or not parsed.netloc:
@@ -1011,8 +1020,8 @@ class ClipStore:
                 """
                 INSERT INTO clips (
                     sort_order, name, folder, filename, filepath, duration_seconds, duration_timecode,
-                    framerate, codec, width, height, media_kind, is_vertical, thumbnail_path, processing_state, loop_enabled, is_builtin, is_remote
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1)
+                    framerate, codec, width, height, media_kind, is_vertical, thumbnail_path, processing_state, remote_max_height, loop_enabled, is_builtin, is_remote
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1)
                 """,
                 (
                     sort_seed + 1,
@@ -1030,6 +1039,7 @@ class ClipStore:
                     0,
                     None,
                     'pending',
+                    max_height,
                 ),
             )
             conn.commit()
@@ -1041,7 +1051,8 @@ class ClipStore:
         tail = parsed.path.rstrip('/').rsplit('/', 1)[-1]
         return tail or parsed.netloc or 'Network link'
 
-    async def _enrich_remote_clip(self, filename: str, url: str, destination: str | None = None, named: bool = False) -> None:
+    async def _enrich_remote_clip(self, filename: str, url: str, destination: str | None = None, named: bool = False,
+                                  max_height: int = 0) -> None:
         try:
             await asyncio.to_thread(self._set_processing_state_sync, filename, 'processing')
             self._get_notify_event().set()
@@ -1053,7 +1064,7 @@ class ClipStore:
                 return
             # ffprobe cannot read it, so it is not a direct stream: treat it as
             # a video-page URL (YouTube & co) and turn it into a local clip.
-            await self._download_remote_page(filename, url, destination, named)
+            await self._download_remote_page(filename, url, destination, named, max_height)
         except Exception:
             # Never let a bad link wedge the clip in 'processing'.
             await asyncio.to_thread(self._set_processing_state_sync, filename, 'ready')
@@ -1072,7 +1083,8 @@ class ClipStore:
         lines = [line.strip() for line in (result.stderr or result.stdout or '').splitlines() if line.strip()]
         return lines[-1][:300] if lines else 'yt-dlp failed with no output'
 
-    async def _download_remote_page(self, filename: str, url: str, destination: str | None, named: bool) -> None:
+    async def _download_remote_page(self, filename: str, url: str, destination: str | None, named: bool,
+                                    max_height: int = 0) -> None:
         try:
             probe = await asyncio.to_thread(self._run_ytdlp, ['--dump-single-json', '--no-download', url], 120.0)
         except subprocess.TimeoutExpired:
@@ -1096,9 +1108,10 @@ class ClipStore:
         dest_dir = destination or str(self.clips_dir)
         try:
             download = await asyncio.to_thread(self._run_ytdlp, [
-                # Prefer <=1080p H.264 + AAC (the Pi's hardware decode path);
-                # -S degrades gracefully when a source has no such format.
-                '-S', 'res:1080,vcodec:h264,acodec:m4a',
+                # Prefer H.264 + AAC (the Pi's hardware decode path) at the
+                # operator-chosen cap (default 1080p); -S degrades gracefully
+                # when a source has no such format.
+                '-S', f'res:{max_height or 1080},vcodec:h264,acodec:m4a',
                 '--merge-output-format', 'mp4',
                 # Keep fragments out of the library while downloading; only the
                 # finished file lands in the scanned folder.

@@ -715,6 +715,20 @@ bindAsync(DOM.btnAddLink, 'click', async () => {
     confirmLabel: 'ADD'
   });
   if (!url) return;
+  const qualityChoices = new Map([
+    ['Auto (recommended)', 0],
+    ['1080p max (may pick 60 fps — heavy for a Pi 3)', 1080],
+    ['720p max', 720],
+    ['480p max', 480],
+  ]);
+  const quality = await requestSelect({
+    title: 'Stream Quality',
+    message: 'Resolution cap for this link (applies to live playback and downloads):',
+    selectOptions: [...qualityChoices.keys()],
+    confirmLabel: 'NEXT'
+  });
+  if (!quality) return;
+  const maxHeight = qualityChoices.get(quality) || 0;
   let destination = null;
   const storage = await api('/api/system/storage-devices');
   const drives = (storage.devices || []).filter((device) => device.removable);
@@ -731,7 +745,7 @@ bindAsync(DOM.btnAddLink, 'click', async () => {
     const drive = drives.find((device) => driveLabel(device) === choice);
     destination = drive ? drive.mountpoint : null;
   }
-  await api('/api/clips/url', { method: 'POST', body: JSON.stringify({ url, destination }) });
+  await api('/api/clips/url', { method: 'POST', body: JSON.stringify({ url, destination, max_height: maxHeight }) });
   await refresh();
   DOM.dropzone.scrollTop = 0;
 }, 'Link Error');

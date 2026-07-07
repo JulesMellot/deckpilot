@@ -19,6 +19,12 @@ from app.core.config import AppConfig
 _IPC_READ_TIMEOUT = 10.0
 
 _AUDIO_CARD_RE = re.compile(r'CARD=([^,]+)')
+
+# Automatic ytdl format: the Pi's VideoCore decoder is rated 1080p30; 1080p60
+# blacks out. Prefer exactly 1080p <=30fps (YouTube live), else the best
+# <=720p at any fps (Twitch offers 1080p60/720p60/480p30 — a plain
+# "<=1080p, <=30fps" filter would pick the tiny 480p30 over 720p60).
+YTDL_FORMAT_AUTO = 'b[height=1080][fps<=31]/b[height<=720]/bv*[height<=720]+ba/b'
 # The analog jack on a Pi is quiet because its ALSA mixer ships below unity.
 # mpv's `volume` is software-only, so we lift the card's playback controls to
 # 100% at startup; the slider then attenuates from a full-level signal.
@@ -43,6 +49,9 @@ class MPVController:
         # only push a 1x reset on a fresh load when the previous clip left it
         # off-speed — one fewer IPC round-trip on the common (1x) fire path.
         self._last_speed: float = 1.0
+        # Same idea for ytdl-format: startup args set the automatic default,
+        # per-clip caps override it, and we only push a change over IPC.
+        self._last_ytdl_format: str = YTDL_FORMAT_AUTO
         self.last_error: str | None = None
 
     def _ipc_path(self) -> str:
@@ -86,8 +95,9 @@ class MPVController:
                 try:
                     self._reader, self._writer = await self._open_ipc()
                     self.last_error = None
-                    # A fresh mpv process starts at 1x; keep the tracker in sync.
+                    # A fresh mpv process starts at 1x; keep the trackers in sync.
                     self._last_speed = 1.0
+                    self._last_ytdl_format = YTDL_FORMAT_AUTO
                     await self._maximize_hardware_mixer()
                     return
                 except (ConnectionError, FileNotFoundError, OSError):
@@ -147,11 +157,31 @@ class MPVController:
         response = await self.command(command)
         return bool(response and response.get('error') == 'success')
 
-    async def play_file(self, path: str, loop: bool = False, is_vertical: bool = False, start: float = 0.0, codec: str | None = None) -> bool:
+    @staticmethod
+    def _ytdl_format_for(max_height: int) -> str:
+        # An explicit operator cap wins over the automatic choice — including
+        # 60 fps variants (their call; 1080p60 exceeds the Pi 3's decoder).
+        if max_height:
+            return f'b[height<={max_height}]/bv*[height<={max_height}]+ba/b'
+        return YTDL_FORMAT_AUTO
+
+    async def _apply_ytdl_format(self, max_height: int | None) -> None:
+        # Only network links carry a value (None for local files: the option is
+        # unused there, and skipping the IPC round-trip keeps fires cheap).
+        if max_height is None:
+            return
+        desired = self._ytdl_format_for(int(max_height))
+        if desired != self._last_ytdl_format:
+            await self._command_ok(['set_property', 'ytdl-format', desired])
+            self._last_ytdl_format = desired
+
+    async def play_file(self, path: str, loop: bool = False, is_vertical: bool = False, start: float = 0.0, codec: str | None = None,
+                        remote_max_height: int | None = None) -> bool:
         # Pick the decoder for this clip's codec before loading: H.264 gets the
         # Pi's hardware path, everything else the default. Set per-load because a
         # previous clip may have left a different hwdec in place.
         await self._command_ok(['set_property', 'hwdec', self._hwdec_for_codec(codec)])
+        await self._apply_ytdl_format(remote_max_height)
         # Only reset to 1x when the last clip left it off-speed (mpv keeps speed
         # across loadfile); skipping the no-op saves an IPC round-trip on a fire.
         if not await self._reset_speed():
@@ -167,8 +197,10 @@ class MPVController:
             await self.seek_absolute(start)
         return await self._command_ok(['set_property', 'pause', False])
 
-    async def cue_file(self, path: str, loop: bool = False, is_vertical: bool = False, start: float = 0.0, codec: str | None = None) -> bool:
+    async def cue_file(self, path: str, loop: bool = False, is_vertical: bool = False, start: float = 0.0, codec: str | None = None,
+                       remote_max_height: int | None = None) -> bool:
         await self._command_ok(['set_property', 'hwdec', self._hwdec_for_codec(codec)])
+        await self._apply_ytdl_format(remote_max_height)
         if not await self._reset_speed():
             return False
         if not await self._command_ok(['set_property', 'pause', True]):
@@ -379,12 +411,9 @@ class MPVController:
             f'--log-file={log_path}',
             f'--input-ipc-server={self._ipc_path()}',
             # Live page links (Twitch, YouTube live…) are resolved at fire time
-            # by mpv's built-in ytdl hook. The Pi's VideoCore decoder is rated
-            # 1080p30; 1080p60 blacks out. Prefer exactly 1080p <=30fps
-            # (YouTube live), else the best <=720p at any fps (Twitch offers
-            # 1080p60/720p60/480p30 — a plain "<=1080p, <=30fps" filter would
-            # pick the tiny 480p30 over the perfectly decodable 720p60).
-            '--ytdl-format=b[height=1080][fps<=31]/b[height<=720]/bv*[height<=720]+ba/b',
+            # by mpv's built-in ytdl hook; see _ytdl_format_for(). Clips with an
+            # operator-chosen resolution cap override this per load.
+            f'--ytdl-format={YTDL_FORMAT_AUTO}',
         ]
         venv_ytdlp = Path(sys.executable).parent / 'yt-dlp'
         if venv_ytdlp.exists():

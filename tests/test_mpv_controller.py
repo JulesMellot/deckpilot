@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from app.core.config import AppConfig
-from app.player.mpv_controller import MPVController
+from app.player.mpv_controller import MPVController, YTDL_FORMAT_AUTO
 
 
 class FakeWriter:
@@ -150,6 +150,12 @@ class MPVControllerAudioDeviceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(controller._hwdec_for_codec('h264'), 'v4l2m2m')
         self.assertEqual(controller._hwdec_for_codec('unknown'), 'v4l2m2m')
         self.assertEqual(controller._hwdec_for_codec('hevc'), 'auto-safe')
+
+    async def test_ytdl_format_respects_operator_cap(self) -> None:
+        controller = MPVController(AppConfig())
+
+        self.assertEqual(controller._ytdl_format_for(0), YTDL_FORMAT_AUTO)
+        self.assertEqual(controller._ytdl_format_for(1080), 'b[height<=1080]/bv*[height<=1080]+ba/b')
 
     async def test_blank_hwdec_falls_back_to_auto_safe(self) -> None:
         controller = MPVController(AppConfig(mpv_hwdec='  '))

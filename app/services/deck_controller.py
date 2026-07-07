@@ -122,8 +122,9 @@ class DeckController:
             await self._refresh_playlist_countdown(self.current_clip_id)
         await self._publish_media_state()
 
-    async def add_remote_clip(self, url: str, name: str | None = None, destination: str | None = None) -> str:
-        key = await self.clip_store.add_remote_clip(url, name, destination)
+    async def add_remote_clip(self, url: str, name: str | None = None, destination: str | None = None,
+                              max_height: int | None = None) -> str:
+        key = await self.clip_store.add_remote_clip(url, name, destination, max_height)
         await self._publish_media_state()
         return key
 
@@ -188,7 +189,8 @@ class DeckController:
             await self._publish_health()
             return False
         in_point, out_point = clip.trim_bounds()
-        if not await self.player.cue_file(clip.filepath, loop=clip.loop_enabled, is_vertical=clip.is_vertical, start=in_point, codec=clip.codec):
+        if not await self.player.cue_file(clip.filepath, loop=clip.loop_enabled, is_vertical=clip.is_vertical, start=in_point, codec=clip.codec,
+                                          remote_max_height=self._remote_cap(clip)):
             await self._report_error('player', f'Cue failed for "{clip.name}": {self.player.last_error or "unknown player error"}')
             await self._publish_health()
             return False
@@ -1099,19 +1101,29 @@ class DeckController:
                 values.append(common)
         return values
 
+    @staticmethod
+    def _remote_cap(clip) -> int | None:
+        """Resolution cap for network links; None for local files (skips the
+        ytdl-format IPC round-trip entirely)."""
+        if getattr(clip, 'is_remote', False):
+            return int(getattr(clip, 'remote_max_height', 0) or 0)
+        return None
+
     async def _start_clip_playback(self, clip, use_loop: bool, start_seconds: float = 0.0) -> bool:
         if not await self._ensure_player_ready():
             await self._report_error('player', f'Player unavailable: {self.player.last_error or "startup failed"}')
             await self._publish_health()
             return False
-        started = await self.player.play_file(clip.filepath, loop=use_loop, is_vertical=clip.is_vertical, start=start_seconds, codec=clip.codec)
+        started = await self.player.play_file(clip.filepath, loop=use_loop, is_vertical=clip.is_vertical, start=start_seconds, codec=clip.codec,
+                                              remote_max_height=self._remote_cap(clip))
         if started:
             return True
         await self._report_error('player', f'Playback failed for "{clip.name}": {self.player.last_error or "unknown player error"}')
         if not await self._ensure_player_ready(force_restart=True):
             await self._publish_health()
             return False
-        started = await self.player.play_file(clip.filepath, loop=use_loop, is_vertical=clip.is_vertical, start=start_seconds, codec=clip.codec)
+        started = await self.player.play_file(clip.filepath, loop=use_loop, is_vertical=clip.is_vertical, start=start_seconds, codec=clip.codec,
+                                              remote_max_height=self._remote_cap(clip))
         if not started:
             await self._report_error('player', f'Playback recovery failed for "{clip.name}": {self.player.last_error or "unknown player error"}')
             await self.player.stop_process()

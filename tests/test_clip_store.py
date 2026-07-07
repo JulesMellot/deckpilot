@@ -588,6 +588,37 @@ class RemoteClipTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await self.store.add_remote_clip('https://example.com/x.mp4', destination='/media/ghost/usb')
 
+    async def test_resolution_cap_is_stored_and_caps_the_download(self) -> None:
+        captured: list[list[str]] = []
+
+        def fake_ytdlp(args, timeout):
+            captured.append(list(args))
+            if '--dump-single-json' in args:
+                return self._fake_result(0, stdout='{"title": "Concert", "is_live": true}')
+            return self._fake_result(0)
+
+        self.store._run_ytdlp = fake_ytdlp
+        await self.store.add_remote_clip('https://www.twitch.tv/somestreamer', max_height=1080)
+        await self._settle()
+        clip = (await self.store.list_clips())[0]
+        self.assertEqual(clip.remote_max_height, 1080)
+
+        with self.assertRaises(ValueError):
+            await self.store.add_remote_clip('https://example.com/y', max_height=333)
+
+        # A VOD download passes the cap to yt-dlp's format sort.
+        def fake_vod(args, timeout):
+            if '--dump-single-json' in args:
+                return self._fake_result(0, stdout='{"title": "Rediff", "duration": 60}')
+            self.assertIn('res:480,vcodec:h264,acodec:m4a', args)
+            (Path(self.config.clips_dir) / 'Rediff [x].mp4').write_bytes(b'v')
+            return self._fake_result(0)
+
+        self.store._run_ytdlp = fake_vod
+        await self.store.add_remote_clip('https://www.youtube.com/watch?v=x', max_height=480)
+        await self._settle()
+        self.assertIn('Rediff [x].mp4', [c.filename for c in await self.store.list_clips()])
+
 
 if __name__ == '__main__':
     unittest.main()

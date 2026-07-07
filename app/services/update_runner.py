@@ -142,14 +142,32 @@ def terminate_process(pid: int) -> None:
         )
 
 
-def wait_for_process_exit(pid: int, timeout: int = 20) -> None:
+def wait_for_process_exit(pid: int, timeout: int = 20) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
             os.kill(pid, 0)
         except OSError:
-            return
+            return True
         time.sleep(0.5)
+    return False
+
+
+def stop_parent(pid: int, term_timeout: int = 20) -> None:
+    """SIGTERM the running server, escalating to SIGKILL if it will not die.
+    A graceful uvicorn shutdown can hang on open websockets; the old process
+    must exit or systemd never restarts the service and the update stalls."""
+    terminate_process(pid)
+    if wait_for_process_exit(pid, timeout=term_timeout):
+        return
+    if platform.system().lower() == 'windows':
+        subprocess.run(['taskkill', '/PID', str(pid), '/T', '/F'], capture_output=True, text=True, check=False)
+    else:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    wait_for_process_exit(pid, timeout=10)
 
 
 def start_app(repo_root: Path, python_executable: str, env: dict[str, str]) -> None:
@@ -305,8 +323,7 @@ def main() -> None:
                 restart_reason=update_plan['restart_reason'],
                 reboot_trigger_files=update_plan['reboot_trigger_files'],
             )
-            terminate_process(args.parent_pid)
-            wait_for_process_exit(args.parent_pid)
+            stop_parent(args.parent_pid)
             time.sleep(1.0)
             reboot_system()
             return
@@ -330,8 +347,7 @@ def main() -> None:
             reboot_trigger_files=update_plan['reboot_trigger_files'],
         )
 
-        terminate_process(args.parent_pid)
-        wait_for_process_exit(args.parent_pid)
+        stop_parent(args.parent_pid)
 
         if not args.service_name:
             start_app(repo_root, args.python_executable, env)

@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-from app.services.update_runner import run_streaming
+from app.services.update_runner import run_streaming, stop_parent
 
 
 class RunStreamingTests(unittest.TestCase):
@@ -37,6 +38,20 @@ class RunStreamingTests(unittest.TestCase):
         with self.assertRaises(RuntimeError) as ctx:
             run_streaming([sys.executable, '-c', script], self.tmp_path, dict(os.environ), self.status, timeout=1)
         self.assertIn('timed out', str(ctx.exception))
+
+
+class StopParentTests(unittest.TestCase):
+    def test_escalates_to_sigkill_when_sigterm_is_ignored(self) -> None:
+        # Mimic uvicorn wedged in graceful shutdown: SIGTERM is ignored.
+        script = "import signal,sys,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); print('ready', flush=True); time.sleep(60)"
+        proc = subprocess.Popen([sys.executable, '-c', script], stdout=subprocess.PIPE)
+        try:
+            proc.stdout.readline()  # handler installed
+            stop_parent(proc.pid, term_timeout=1)
+            self.assertIsNotNone(proc.wait(timeout=5))
+        finally:
+            if proc.poll() is None:
+                proc.kill()
 
 
 if __name__ == '__main__':

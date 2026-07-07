@@ -30,6 +30,14 @@ into a new dated section, then `git tag v0.x.y`.
   showing the real transport state.
 
 ### Fixed
+- **Web update left the deck offline** (stuck at step 1/4, then unreachable): on SIGTERM,
+  uvicorn's graceful shutdown waited forever on the UI's always-open websockets — the old
+  process never exited, so systemd never restarted the service and the updater reported
+  "DeckPilot did not come back online". uvicorn now force-closes connections after 5 s
+  (`timeout_graceful_shutdown`), and the update runner escalates to SIGKILL if the old
+  server ignores SIGTERM for 20 s. Note: the fix takes effect on the *next* update after
+  this one is installed; the update that installs it still needs a manual
+  `sudo systemctl restart deckpilot`.
 - Toggling the ♪ flag from the library while the clip is playing now takes effect immediately
   (countdown and HyperDeck status), even outside playlist mode.
 - **Music flag ignored outside playlist mode**: a clip flagged ♪ in the library and played

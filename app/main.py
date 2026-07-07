@@ -79,6 +79,11 @@ def main() -> None:
         port=config.http_port,
         access_log=False,
         log_level='warning',
+        # Without a bound, SIGTERM leaves uvicorn waiting forever on the UI's
+        # always-open websockets: the process never exits, systemd never
+        # restarts it, and the updater declares the deck dead (issue seen live
+        # on the Pi: update stuck at step 3, port closed, PID still alive).
+        timeout_graceful_shutdown=5,
     )
 
 

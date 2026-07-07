@@ -118,7 +118,7 @@ class DeckController:
     async def refresh_clips(self, settle_paths: set[str] | None = None) -> None:
         await self.clip_store.sync_with_disk(settle_paths)
         await self.playlist_store.sync_active_playlist_from_clips()
-        if self._playlist_mode and self.current_clip_id:
+        if self.current_clip_id:
             await self._refresh_playlist_countdown(self.current_clip_id)
         await self._publish_media_state()
 
@@ -1014,6 +1014,13 @@ class DeckController:
             display_timecode=timecode,
             **self._mark_transport_fields(clip),
         )
+
+    @property
+    def music_on_air(self) -> bool:
+        """True while the playing clip is flagged music. The HyperDeck facade
+        then reports the deck as stopped, so ATEM/Companion automations keyed
+        on play/stop treat music beds as off-air."""
+        return self._countdown_in_music and self.state.transport.status == 'play'
 
     def _countdown_for(self, remaining: float) -> float:
         """The on-air countdown: nothing while music plays, otherwise the

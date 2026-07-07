@@ -165,6 +165,20 @@ class HyperDeckDispatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('single clip: false', reply)
         self.assertIn('loop: false', reply)
 
+    async def test_transport_info_reports_stopped_while_music_plays(self) -> None:
+        # A music-flagged clip must look off-air to ATEM/Companion triggers.
+        await self.state.set_transport(status='play', paused=False, speed=100, clip_id=1)
+        self.controller._countdown_in_music = True
+
+        reply = await self.dispatch('transport info')
+
+        self.assertIn('status: stopped', reply)
+        self.assertIn('speed: 0', reply)
+
+        self.controller._countdown_in_music = False
+        reply = await self.dispatch('transport info')
+        self.assertIn('status: play', reply)
+
     async def test_transport_info_advertises_first_clip_when_idle(self) -> None:
         # Nothing cued: the ATEM needs a non-zero clip id to arm auto-roll.
         reply = await self.dispatch('transport info')

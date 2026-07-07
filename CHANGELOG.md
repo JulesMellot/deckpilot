@@ -23,8 +23,15 @@ into a new dated section, then `git tag v0.x.y`.
   on a music bed and the presenter sees exactly how long until the videos are done, while the
   music itself shows no countdown. The flag survives library re-syncs and is included in
   JSON export/import (`is_music` on clips and playlist items, `countdown_seconds` on transport).
+- **Music items look off-air to the ATEM**: while a music-flagged clip plays, the HyperDeck
+  protocol reports `status: stopped` (speed 0) instead of `play`, so Companion triggers keyed
+  on the play→stop transition fire before the music starts and stay put until real video
+  resumes. A playlist with no music flags still reports `play` end to end. The web UI keeps
+  showing the real transport state.
 
 ### Fixed
+- Toggling the ♪ flag from the library while the clip is playing now takes effect immediately
+  (countdown and HyperDeck status), even outside playlist mode.
 - **Music flag ignored outside playlist mode**: a clip flagged ♪ in the library and played
   directly (not through the active playlist) still fed the `/countdown` overlay. The clip-level
   flag now mutes the countdown wherever the clip is launched from.

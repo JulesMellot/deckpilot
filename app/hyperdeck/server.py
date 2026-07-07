@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from typing import Any
 
 from app import __version__
 from app.core.config import AppConfig
@@ -142,6 +143,14 @@ class HyperDeckServer:
         clips = await self.controller.list_clips()
         return clips[0].deck_id if clips else 0
 
+    def _reported_transport(self, status: str, speed: Any) -> tuple[str, Any]:
+        """Music-flagged clips must look off-air to ATEM/Companion: while one
+        plays, the protocol reports the deck as stopped so play→stop triggers
+        fire before the music, and nothing changes until real video resumes."""
+        if status == 'play' and getattr(self.controller, 'music_on_air', False):
+            return 'stopped', 0
+        return status, speed
+
     def _greeting(self) -> bytes:
         return response(
             500,
@@ -195,11 +204,12 @@ class HyperDeckServer:
             # clip (>= 1). When nothing is cued yet, advertise the first clip so
             # the ATEM treats the deck as ready and will auto-roll it.
             clip_id = t.clip_id or await self._effective_clip_id()
+            status, speed = self._reported_transport(t.status, t.speed)
             return response(
                 208,
                 'transport info:',
-                f'status: {t.status}',
-                f'speed: {t.speed}',
+                f'status: {status}',
+                f'speed: {speed}',
                 f'slot id: {t.slot_id}',
                 f'clip id: {clip_id}',
                 f'single clip: {str(t.single_clip).lower()}',
@@ -416,11 +426,12 @@ class HyperDeckServer:
                 # Mirror the synchronous `transport info`: never advertise clip 0
                 # to a subscriber, or the ATEM drops its auto-roll readiness.
                 clip_id = payload['clip_id'] or await self._effective_clip_id()
+                status, speed = self._reported_transport(payload['status'], payload['speed'])
                 packet = response(
                     508,
                     'transport info:',
-                    f"status: {payload['status']}",
-                    f"speed: {payload['speed']}",
+                    f"status: {status}",
+                    f"speed: {speed}",
                     f"slot id: {payload['slot_id']}",
                     f"clip id: {clip_id}",
                     f"single clip: {str(payload['single_clip']).lower()}",

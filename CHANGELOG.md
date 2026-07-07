@@ -44,6 +44,11 @@ into a new dated section, then `git tag v0.x.y`.
   showing the real transport state.
 
 ### Fixed
+- **Live links played black (sound only)**: a network link probes as codec "unknown", which
+  routed it to `hwdec=auto-safe` — software decode, hopeless for live H.264 on a Pi 3 —
+  and the live format cap allowed 1080p60, beyond the VideoCore decoder's 1080p30 rating.
+  Unknown-codec sources now get the H.264 hardware decode path (mpv falls back by itself
+  if the source is not H.264), and live streams prefer ≤1080p30, then ≤720p.
 - **PLAY on a browsed playlist fired the wrong clip**: the main PLAY button always started
   the *active* playlist, so pressing it while viewing another rundown fired the active
   list's first item (e.g. a random library pad). PLAY now targets the playlist being

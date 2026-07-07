@@ -142,6 +142,15 @@ class MPVControllerAudioDeviceTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('--hwdec=v4l2m2m-copy', command)
             self.assertNotIn('--hwdec=auto-safe', command)
 
+    async def test_unknown_codec_gets_the_h264_hardware_path(self) -> None:
+        # Network links (Twitch, YouTube live…) probe as 'unknown' but are
+        # H.264 in practice; software decode blacks out video on a Pi 3.
+        controller = MPVController(AppConfig(mpv_hwdec_h264='v4l2m2m'))
+
+        self.assertEqual(controller._hwdec_for_codec('h264'), 'v4l2m2m')
+        self.assertEqual(controller._hwdec_for_codec('unknown'), 'v4l2m2m')
+        self.assertEqual(controller._hwdec_for_codec('hevc'), 'auto-safe')
+
     async def test_blank_hwdec_falls_back_to_auto_safe(self) -> None:
         controller = MPVController(AppConfig(mpv_hwdec='  '))
 

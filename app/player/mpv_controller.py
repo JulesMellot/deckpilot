@@ -335,8 +335,11 @@ class MPVController:
     def _hwdec_for_codec(self, codec: str | None) -> str:
         # H.264 gets the dedicated hardware path when one was detected; anything
         # else (HEVC/VP9/images/…) falls back to the general default, which the
-        # Pi has no hardware block for anyway.
-        if self._h264_hwdec and (codec or '').strip().lower() == 'h264':
+        # Pi has no hardware block for anyway. 'unknown' means a network link
+        # whose page ffprobe could not read (Twitch, YouTube live…): those
+        # sources are H.264 in practice, and software decode blacks out the
+        # video on a Pi 3 — assume H.264; mpv falls back by itself if not.
+        if self._h264_hwdec and (codec or '').strip().lower() in ('h264', 'unknown'):
             return self._h264_hwdec
         return self._hwdec_mode()
 
@@ -376,9 +379,11 @@ class MPVController:
             f'--log-file={log_path}',
             f'--input-ipc-server={self._ipc_path()}',
             # Live page links (Twitch, YouTube live…) are resolved at fire time
-            # by mpv's built-in ytdl hook. Cap what it picks at 1080p — the
-            # sources are H.264 HLS, the Pi's hardware decode path.
-            '--ytdl-format=b[height<=1080]/bv*[height<=1080]+ba/b',
+            # by mpv's built-in ytdl hook. The Pi's VideoCore decoder is rated
+            # 1080p30: prefer <=1080p at <=30 fps, then <=720p (Twitch often
+            # only offers 60 fps variants), then whatever exists. 1080p60
+            # exceeds the decoder and blacks out the video.
+            '--ytdl-format=b[height<=1080][fps<=30]/b[height<=720]/bv*[height<=720]+ba/b',
         ]
         venv_ytdlp = Path(sys.executable).parent / 'yt-dlp'
         if venv_ytdlp.exists():

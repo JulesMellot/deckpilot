@@ -380,10 +380,11 @@ class MPVController:
             f'--input-ipc-server={self._ipc_path()}',
             # Live page links (Twitch, YouTube live…) are resolved at fire time
             # by mpv's built-in ytdl hook. The Pi's VideoCore decoder is rated
-            # 1080p30: prefer <=1080p at <=30 fps, then <=720p (Twitch often
-            # only offers 60 fps variants), then whatever exists. 1080p60
-            # exceeds the decoder and blacks out the video.
-            '--ytdl-format=b[height<=1080][fps<=30]/b[height<=720]/bv*[height<=720]+ba/b',
+            # 1080p30; 1080p60 blacks out. Prefer exactly 1080p <=30fps
+            # (YouTube live), else the best <=720p at any fps (Twitch offers
+            # 1080p60/720p60/480p30 — a plain "<=1080p, <=30fps" filter would
+            # pick the tiny 480p30 over the perfectly decodable 720p60).
+            '--ytdl-format=b[height=1080][fps<=31]/b[height<=720]/bv*[height<=720]+ba/b',
         ]
         venv_ytdlp = Path(sys.executable).parent / 'yt-dlp'
         if venv_ytdlp.exists():

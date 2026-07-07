@@ -49,6 +49,11 @@ into a new dated section, then `git tag v0.x.y`.
   and the live format cap allowed 1080p60, beyond the VideoCore decoder's 1080p30 rating.
   Unknown-codec sources now get the H.264 hardware decode path (mpv falls back by itself
   if the source is not H.264), and live streams prefer ≤1080p30, then ≤720p.
+- Live format selection picked Twitch's tiny 480p30 over its 720p60 (the "≤30 fps" filter
+  excluded every 60 fps variant). Now: exactly 1080p ≤30 fps first (YouTube live), else the
+  best ≤720p at any fps. Known limitation: on Debian bookworm's cage 0.1.4 a sub-1080p
+  source is displayed unscaled (centered) — `wp_viewporter`, which mpv's dmabuf-wayland
+  needs for compositor-side scaling, only exists in cage ≥ 0.2.
 - **PLAY on a browsed playlist fired the wrong clip**: the main PLAY button always started
   the *active* playlist, so pressing it while viewing another rundown fired the active
   list's first item (e.g. a random library pad). PLAY now targets the playlist being

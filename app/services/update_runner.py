@@ -78,7 +78,9 @@ def pip_command(repo_root: Path, python_executable: str) -> list[str]:
     # index auth) — that reads as "the updater is stuck" to the operator.
     # Fewer retries: on a dead venue network, pip's default 5 retries with
     # backoff stall for minutes before surfacing the real error.
-    return [*base, 'install', '--no-input', '--retries', '2', '--progress-bar', 'off',
+    # --upgrade: no-op for the ==-pinned packages, but keeps the deliberately
+    # unpinned yt-dlp fresh — YouTube breaks old extractors within months.
+    return [*base, 'install', '--upgrade', '--no-input', '--retries', '2', '--progress-bar', 'off',
             '-r', str(repo_root / 'requirements.txt')]
 
 

@@ -23,6 +23,16 @@ into a new dated section, then `git tag v0.x.y`.
   on a music bed and the presenter sees exactly how long until the videos are done, while the
   music itself shows no countdown. The flag survives library re-syncs and is included in
   JSON export/import (`is_music` on clips and playlist items, `countdown_seconds` on transport).
+- **ADD LINK downloads video pages (YouTube & co)**: a link that is not a direct stream is
+  probed with yt-dlp (real title and duration appear right away), then downloaded in the
+  background — H.264 ≤ 1080p preferred, the Pi's hardware decode path — at idle CPU/IO
+  priority so playout never stutters. When the download finishes, the link entry is replaced
+  by the local file, ingested like any other clip. A dead or unsupported link now shows a red
+  error badge with the reason instead of silently looking like a live stream. When a USB
+  drive is connected, the ADD LINK dialog asks whether the download goes to internal storage
+  or the drive. Direct streams (HLS, RTSP, SRT…) keep the previous streaming behavior.
+  yt-dlp ships unpinned in requirements.txt and the updater's pip pass now runs with
+  `--upgrade`, so it stays fresh (the Debian-packaged 2023 build is broken against YouTube).
 - **Music items look off-air to the ATEM**: while a music-flagged clip plays, the HyperDeck
   protocol reports `status: stopped` (speed 0) instead of `play`, so Companion triggers keyed
   on the play→stop transition fire before the music starts and stay put until real video

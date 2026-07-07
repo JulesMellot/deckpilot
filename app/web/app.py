@@ -146,6 +146,7 @@ class AudioDeviceRequest(BaseModel):
 class RemoteClipRequest(BaseModel):
     url: str
     name: str | None = None
+    destination: str | None = None
 
 
 class BulkDeleteRequest(BaseModel):
@@ -587,7 +588,7 @@ def build_app(
     @app.post('/api/clips/url')
     async def add_clip_url(payload: RemoteClipRequest) -> dict[str, Any]:
         try:
-            key = await controller.add_remote_clip(payload.url, payload.name)
+            key = await controller.add_remote_clip(payload.url, payload.name, payload.destination)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         await state.add_log('info', 'media', f'Added network link: {payload.url}')

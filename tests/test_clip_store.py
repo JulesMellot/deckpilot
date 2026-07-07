@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import os
+import subprocess
 import tempfile
 import time
 import unittest
@@ -494,6 +496,82 @@ class HelperFunctionTests(unittest.TestCase):
         stdout = '\n'.join(['lavfi.astats.Overall.RMS_level=-10.0'] * 50)
 
         self.assertEqual(len(parse_rms_levels(stdout, max_entries=20)), 20)
+
+
+class RemoteClipTests(unittest.IsolatedAsyncioTestCase):
+    """Add-link behavior: direct streams stay links, video pages (YouTube…)
+    are downloaded via yt-dlp and become normal local clips."""
+
+    PROBE_FALLBACK = {
+        'duration_seconds': 0.0, 'duration_timecode': '00:00:00:00', 'framerate': 25.0,
+        'codec': 'unknown', 'width': 0, 'height': 0, 'media_kind': 'video', 'is_vertical': False,
+    }
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        base_path = Path(self.temp_dir.name)
+        self.config = AppConfig(
+            clips_dir=str(base_path / 'clips'),
+            data_dir=str(base_path / 'data'),
+            db_path=str(base_path / 'data' / 'test.db'),
+            thumbnails_dir=str(base_path / 'thumbs'),
+        )
+        self.config.ensure_directories()
+        self.store = ClipStore(self.config)
+        self.store._initialize_sync()
+        # No network in tests: ffprobe "fails" (page URL) unless a test overrides.
+        self.store._ffprobe_meta = lambda source, kind, timeout=None: dict(self.PROBE_FALLBACK)
+        self.store._generate_remote_thumbnail = lambda url, key: None
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    async def _settle(self) -> None:
+        while self.store._remote_enrichment_tasks:
+            await asyncio.gather(*list(self.store._remote_enrichment_tasks))
+
+    @staticmethod
+    def _fake_result(returncode: int, stdout: str = '', stderr: str = ''):
+        return subprocess.CompletedProcess(args=['yt-dlp'], returncode=returncode, stdout=stdout, stderr=stderr)
+
+    async def test_page_url_is_downloaded_and_becomes_local_clip(self) -> None:
+        def fake_ytdlp(args, timeout):
+            if '--dump-single-json' in args:
+                return self._fake_result(0, stdout='{"title": "Big Buck Bunny", "duration": 596}')
+            (Path(self.config.clips_dir) / 'Big Buck Bunny [aqz].mp4').write_bytes(b'fake video')
+            return self._fake_result(0)
+
+        self.store._run_ytdlp = fake_ytdlp
+        await self.store.add_remote_clip('https://www.youtube.com/watch?v=aqz')
+        await self._settle()
+
+        clips = await self.store.list_clips()
+        self.assertEqual([c.filename for c in clips if c.is_remote], [])
+        self.assertIn('Big Buck Bunny [aqz].mp4', [c.filename for c in clips])
+
+    async def test_failed_probe_marks_link_in_error(self) -> None:
+        self.store._run_ytdlp = lambda args, timeout: self._fake_result(1, stderr='ERROR: Unsupported URL')
+        await self.store.add_remote_clip('https://example.com/not-a-video')
+        await self._settle()
+
+        clip = (await self.store.list_clips())[0]
+        self.assertEqual(clip.processing_state, 'error')
+        self.assertIn('Unsupported URL', clip.error_reason)
+
+    async def test_direct_stream_stays_a_link_without_ytdlp(self) -> None:
+        meta = dict(self.PROBE_FALLBACK, codec='h264', width=1920, height=1080, duration_seconds=42.0)
+        self.store._ffprobe_meta = lambda source, kind, timeout=None: meta
+        self.store._run_ytdlp = lambda args, timeout: self.fail('yt-dlp must not run for a direct stream')
+        await self.store.add_remote_clip('https://example.com/stream.m3u8')
+        await self._settle()
+
+        clip = (await self.store.list_clips())[0]
+        self.assertTrue(clip.is_remote)
+        self.assertEqual(clip.codec, 'h264')
+
+    async def test_disconnected_destination_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            await self.store.add_remote_clip('https://example.com/x.mp4', destination='/media/ghost/usb')
 
 
 if __name__ == '__main__':

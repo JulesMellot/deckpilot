@@ -9,6 +9,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import sys
 import time
 from pathlib import Path
 from threading import Lock
@@ -973,15 +974,21 @@ class ClipStore:
             row = conn.execute('SELECT filepath FROM clips WHERE filename = ? AND is_remote = 0', (filename,)).fetchone()
         return row['filepath'] if row else None
 
-    async def add_remote_clip(self, url: str, name: str | None = None) -> str:
+    async def add_remote_clip(self, url: str, name: str | None = None, destination: str | None = None) -> str:
         """Add a network link (http/rtsp/...) as a playable clip.
 
         Inserts immediately so the operator sees it, then probes the URL in the
-        background for duration / thumbnail; a slow or live source just stays an
-        open-ended clip.
+        background. A direct stream (HLS, RTSP, a plain .mp4 URL...) stays a
+        streaming link; a video-page URL (YouTube & co) is downloaded via
+        yt-dlp into ``destination`` (a connected drive) or the internal library
+        and becomes a normal local clip.
         """
+        if destination and destination not in removable_media_roots():
+            raise ValueError('That destination drive is not connected.')
         key, clean_url = await asyncio.to_thread(self._insert_remote_clip_sync, url, name)
-        task = asyncio.create_task(self._enrich_remote_clip(key, clean_url))
+        task = asyncio.create_task(
+            self._enrich_remote_clip(key, clean_url, destination=destination, named=bool((name or '').strip()))
+        )
         self._remote_enrichment_tasks.add(task)
         task.add_done_callback(self._remote_enrichment_tasks.discard)
         return key
@@ -1034,18 +1041,98 @@ class ClipStore:
         tail = parsed.path.rstrip('/').rsplit('/', 1)[-1]
         return tail or parsed.netloc or 'Network link'
 
-    async def _enrich_remote_clip(self, filename: str, url: str) -> None:
+    async def _enrich_remote_clip(self, filename: str, url: str, destination: str | None = None, named: bool = False) -> None:
         try:
             await asyncio.to_thread(self._set_processing_state_sync, filename, 'processing')
             self._get_notify_event().set()
             meta = await asyncio.to_thread(self._ffprobe_meta, url, 'video', 20.0)
-            thumb = await asyncio.to_thread(self._generate_remote_thumbnail, url, filename)
-            await asyncio.to_thread(self._apply_remote_meta_sync, filename, meta, thumb)
+            direct_stream = meta['codec'] != 'unknown' or urlparse(url).scheme.lower() not in ('http', 'https')
+            if direct_stream:
+                thumb = await asyncio.to_thread(self._generate_remote_thumbnail, url, filename)
+                await asyncio.to_thread(self._apply_remote_meta_sync, filename, meta, thumb)
+                return
+            # ffprobe cannot read it, so it is not a direct stream: treat it as
+            # a video-page URL (YouTube & co) and turn it into a local clip.
+            await self._download_remote_page(filename, url, destination, named)
         except Exception:
             # Never let a bad link wedge the clip in 'processing'.
             await asyncio.to_thread(self._set_processing_state_sync, filename, 'ready')
         finally:
             self._get_notify_event().set()
+
+    def _run_ytdlp(self, args: list[str], timeout: float) -> subprocess.CompletedProcess:
+        """yt-dlp via the venv python, reniced below playback. Freshness rides
+        on the updater's pip pass (yt-dlp is unpinned + pip --upgrade), not on
+        the Debian package, which is frozen for years and breaks on YouTube."""
+        cmd = [sys.executable, '-m', 'yt_dlp', '--no-warnings', '--no-playlist', *args]
+        return _background_run(cmd, check=False, capture_output=True, text=True, timeout=timeout)
+
+    @staticmethod
+    def _ytdlp_error_tail(result: subprocess.CompletedProcess) -> str:
+        lines = [line.strip() for line in (result.stderr or result.stdout or '').splitlines() if line.strip()]
+        return lines[-1][:300] if lines else 'yt-dlp failed with no output'
+
+    async def _download_remote_page(self, filename: str, url: str, destination: str | None, named: bool) -> None:
+        try:
+            probe = await asyncio.to_thread(self._run_ytdlp, ['--dump-single-json', '--no-download', url], 120.0)
+        except subprocess.TimeoutExpired:
+            await asyncio.to_thread(self._set_remote_error_sync, filename, 'Link probe timed out — check the URL or the network.')
+            return
+        if probe.returncode != 0:
+            await asyncio.to_thread(self._set_remote_error_sync, filename,
+                                    f'Not a playable stream or page: {self._ytdlp_error_tail(probe)}')
+            return
+        info = json.loads(probe.stdout or '{}')
+        await asyncio.to_thread(self._apply_remote_probe_sync, filename,
+                                (info.get('title') or '').strip(), float(info.get('duration') or 0.0), named)
+        self._get_notify_event().set()
+        dest_dir = destination or str(self.clips_dir)
+        try:
+            download = await asyncio.to_thread(self._run_ytdlp, [
+                # Prefer <=1080p H.264 + AAC (the Pi's hardware decode path);
+                # -S degrades gracefully when a source has no such format.
+                '-S', 'res:1080,vcodec:h264,acodec:m4a',
+                '--merge-output-format', 'mp4',
+                # Keep fragments out of the library while downloading; only the
+                # finished file lands in the scanned folder.
+                '--paths', f'temp:{self.config.data_dir}',
+                '-o', os.path.join(dest_dir, '%(title).80B [%(id)s].%(ext)s'),
+                '--no-progress', url,
+            ], 3 * 3600.0)
+        except subprocess.TimeoutExpired:
+            await asyncio.to_thread(self._set_remote_error_sync, filename, 'Download timed out after 3 hours.')
+            return
+        if download.returncode != 0:
+            await asyncio.to_thread(self._set_remote_error_sync, filename,
+                                    f'Download failed: {self._ytdlp_error_tail(download)}')
+            return
+        # The link served its purpose: drop it and let the normal disk sync
+        # ingest the downloaded file like any local clip (thumbnail, meta...).
+        await asyncio.to_thread(self._delete_remote_entry_sync, filename)
+        await self.sync_with_disk()
+
+    def _set_remote_error_sync(self, filename: str, reason: str) -> None:
+        with self._connect() as conn:
+            conn.execute("UPDATE clips SET processing_state = 'error', error_reason = ? WHERE filename = ? AND is_remote = 1",
+                         (reason, filename))
+            conn.commit()
+        self._invalidate_clips_cache()
+
+    def _apply_remote_probe_sync(self, filename: str, title: str, duration: float, named: bool) -> None:
+        with self._connect() as conn:
+            if title and not named:
+                conn.execute('UPDATE clips SET name = ? WHERE filename = ? AND is_remote = 1', (title, filename))
+            if duration > 0:
+                conn.execute('UPDATE clips SET duration_seconds = ?, duration_timecode = ? WHERE filename = ? AND is_remote = 1',
+                             (duration, seconds_to_timecode(duration, self.config.default_framerate), filename))
+            conn.commit()
+        self._invalidate_clips_cache()
+
+    def _delete_remote_entry_sync(self, filename: str) -> None:
+        with self._connect() as conn:
+            conn.execute('DELETE FROM clips WHERE filename = ? AND is_remote = 1', (filename,))
+            conn.commit()
+        self._invalidate_clips_cache()
 
     def _apply_remote_meta_sync(self, filename: str, meta: dict, thumb: str | None) -> None:
         with self._connect() as conn:

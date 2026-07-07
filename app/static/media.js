@@ -711,11 +711,27 @@ bindAsync(DOM.btnNewFolder, 'click', async () => {
 bindAsync(DOM.btnAddLink, 'click', async () => {
   const url = await requestText({
     title: 'Add Network Link',
-    message: 'Stream / video URL (http, https, rtsp, rtmp, hls…):',
+    message: 'Stream / video URL (http, https, rtsp, rtmp, hls…). Video-page links (YouTube…) are downloaded into the library.',
     confirmLabel: 'ADD'
   });
   if (!url) return;
-  await api('/api/clips/url', { method: 'POST', body: JSON.stringify({ url }) });
+  let destination = null;
+  const storage = await api('/api/system/storage-devices');
+  const drives = (storage.devices || []).filter((device) => device.removable);
+  if (drives.length) {
+    const internalLabel = 'Internal storage';
+    const driveLabel = (device) => `${device.label} — ${(device.free_bytes / 1e9).toFixed(1)} GB free`;
+    const choice = await requestSelect({
+      title: 'Download Destination',
+      message: 'If this link needs downloading, where should the video be saved?',
+      selectOptions: [internalLabel, ...drives.map(driveLabel)],
+      confirmLabel: 'ADD'
+    });
+    if (!choice) return;
+    const drive = drives.find((device) => driveLabel(device) === choice);
+    destination = drive ? drive.mountpoint : null;
+  }
+  await api('/api/clips/url', { method: 'POST', body: JSON.stringify({ url, destination }) });
   await refresh();
   DOM.dropzone.scrollTop = 0;
 }, 'Link Error');

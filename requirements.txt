@@ -3,3 +3,6 @@ uvicorn==0.34.2
 python-multipart==0.0.20
 pydantic==2.11.5
 wsproto==1.2.0
+# Deliberately unpinned: YouTube breaks old extractors within months, and the
+# updater's pip pass runs with --upgrade to keep it fresh. Never pin this.
+yt-dlp

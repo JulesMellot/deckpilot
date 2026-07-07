@@ -122,8 +122,8 @@ class DeckController:
             await self._refresh_playlist_countdown(self.current_clip_id)
         await self._publish_media_state()
 
-    async def add_remote_clip(self, url: str, name: str | None = None) -> str:
-        key = await self.clip_store.add_remote_clip(url, name)
+    async def add_remote_clip(self, url: str, name: str | None = None, destination: str | None = None) -> str:
+        key = await self.clip_store.add_remote_clip(url, name, destination)
         await self._publish_media_state()
         return key
 

@@ -569,6 +569,21 @@ class RemoteClipTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(clip.is_remote)
         self.assertEqual(clip.codec, 'h264')
 
+    async def test_live_page_stays_a_streaming_link(self) -> None:
+        def fake_ytdlp(args, timeout):
+            if '--dump-single-json' in args:
+                return self._fake_result(0, stdout='{"title": "My Twitch Live", "is_live": true}')
+            return self.fail('a live stream must never be downloaded')
+
+        self.store._run_ytdlp = fake_ytdlp
+        await self.store.add_remote_clip('https://www.twitch.tv/somestreamer')
+        await self._settle()
+
+        clip = (await self.store.list_clips())[0]
+        self.assertTrue(clip.is_remote)
+        self.assertEqual(clip.processing_state, 'ready')
+        self.assertEqual(clip.name, 'My Twitch Live')
+
     async def test_disconnected_destination_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
             await self.store.add_remote_clip('https://example.com/x.mp4', destination='/media/ghost/usb')

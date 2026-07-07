@@ -5,6 +5,7 @@ import json
 import os
 import platform
 import re
+import sys
 from asyncio.subprocess import Process
 from pathlib import Path
 from typing import Any
@@ -374,7 +375,16 @@ class MPVController:
             '--audio-pitch-correction=no',
             f'--log-file={log_path}',
             f'--input-ipc-server={self._ipc_path()}',
+            # Live page links (Twitch, YouTube live…) are resolved at fire time
+            # by mpv's built-in ytdl hook. Cap what it picks at 1080p — the
+            # sources are H.264 HLS, the Pi's hardware decode path.
+            '--ytdl-format=b[height<=1080]/bv*[height<=1080]+ba/b',
         ]
+        venv_ytdlp = Path(sys.executable).parent / 'yt-dlp'
+        if venv_ytdlp.exists():
+            # Point the hook at the venv's fresh yt-dlp: the Debian-packaged
+            # one found in PATH is years old and broken against YouTube/Twitch.
+            base_args.append(f'--script-opts=ytdl_hook-ytdl_path={venv_ytdlp}')
         if self._selected_audio_device != 'auto':
             base_args.append(f'--audio-device={self._selected_audio_device}')
         if self._selected_output_id and self._selected_output_id.isdigit():

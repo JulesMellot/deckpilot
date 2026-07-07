@@ -33,6 +33,10 @@ into a new dated section, then `git tag v0.x.y`.
   or the drive. Direct streams (HLS, RTSP, SRT…) keep the previous streaming behavior.
   yt-dlp ships unpinned in requirements.txt and the updater's pip pass now runs with
   `--upgrade`, so it stays fresh (the Debian-packaged 2023 build is broken against YouTube).
+- **Live links (Twitch, YouTube live…) play as streams**: a page link probed as live is
+  never downloaded (recording a live until the timeout would fill the disk) — it stays a
+  streaming link with its real title, resolved at fire time by mpv's ytdl hook. The hook is
+  pointed at the venv's fresh yt-dlp instead of the stale Debian one, capped at 1080p H.264.
 - **Music items look off-air to the ATEM**: while a music-flagged clip plays, the HyperDeck
   protocol reports `status: stopped` (speed 0) instead of `play`, so Companion triggers keyed
   on the play→stop transition fire before the music starts and stay put until real video

@@ -1086,6 +1086,13 @@ class ClipStore:
         await asyncio.to_thread(self._apply_remote_probe_sync, filename,
                                 (info.get('title') or '').strip(), float(info.get('duration') or 0.0), named)
         self._get_notify_event().set()
+        if info.get('is_live'):
+            # A live stream (Twitch, YouTube live…) must not be "downloaded" —
+            # that would record it until the timeout while filling the disk.
+            # Keep it a streaming link; mpv resolves it at fire time through
+            # its ytdl hook, pointed at the venv's fresh yt-dlp.
+            await asyncio.to_thread(self._set_processing_state_sync, filename, 'ready')
+            return
         dest_dir = destination or str(self.clips_dir)
         try:
             download = await asyncio.to_thread(self._run_ytdlp, [

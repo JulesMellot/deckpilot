@@ -117,6 +117,16 @@ export async function refreshViewedPlaylist() {
 
 export async function playPlaylist() {
   const loop = Boolean(state.snapshot?.transport?.playlist_loop);
+  const playlistId = currentPlaylistId();
+  if (playlistId) {
+    // Play the playlist being *viewed* (activating it if needed), not the
+    // active one — otherwise PLAY on a browsed rundown fires another list.
+    await api(`/api/playlists/${playlistId}/play-from`, {
+      method: 'POST',
+      body: JSON.stringify({ position: 1, loop })
+    });
+    return;
+  }
   await api('/api/playlists/play', {
     method: 'POST',
     body: JSON.stringify({ loop })

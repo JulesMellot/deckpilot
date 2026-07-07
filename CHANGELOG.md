@@ -44,6 +44,10 @@ into a new dated section, then `git tag v0.x.y`.
   showing the real transport state.
 
 ### Fixed
+- **PLAY on a browsed playlist fired the wrong clip**: the main PLAY button always started
+  the *active* playlist, so pressing it while viewing another rundown fired the active
+  list's first item (e.g. a random library pad). PLAY now targets the playlist being
+  viewed, activating it first — same behavior the per-item ▶ buttons already had.
 - After a successful web update, the operator UI reloads itself (1.5 s after the
   "success" status) so the browser serves the freshly pulled frontend modules instead
   of the pre-update ones.
